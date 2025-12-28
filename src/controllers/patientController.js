@@ -1,14 +1,22 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 
-
 // --------------------
 // Patient Registration
 // --------------------
 exports.register = async (req, res) => {
-  const { fullName, phone, email, password, confirmPassword, gender, dob } = req.body;
+  const { fullName, phone, email, password, confirmPassword, gender, dob } =
+    req.body;
 
-  if (!fullName || !phone || !email || !password || !confirmPassword || !gender || !dob) {
+  if (
+    !fullName ||
+    !phone ||
+    !email ||
+    !password ||
+    !confirmPassword ||
+    !gender ||
+    !dob
+  ) {
     return res.status(400).json({ message: "All fields are required" });
   }
 
@@ -29,7 +37,9 @@ exports.register = async (req, res) => {
   }
 
   if (password.length < 8) {
-    return res.status(400).json({ message: "Password must be at least 8 characters" });
+    return res
+      .status(400)
+      .json({ message: "Password must be at least 8 characters" });
   }
 
   const connection = await db.getConnection();
@@ -59,23 +69,24 @@ exports.register = async (req, res) => {
     await connection.query(
       `INSERT INTO patients (user_id, fullName, phone, gender, dob,email)
        VALUES (?, ?, ?, ?, ?,?)`,
-      [userResult.insertId, fullName, phone, gender, dob,email]
+      [userResult.insertId, fullName, phone, gender, dob, email]
     );
 
     await connection.commit();
     connection.release();
 
     return res.status(201).json({ message: "Patient registered successfully" });
-
   } catch (err) {
     await connection.rollback();
     connection.release();
-    return res.status(500).json({ message: "Server error", error: err.message });
+    return res
+      .status(500)
+      .json({ message: "Server error", error: err.message });
   }
 };
 // Patient getDashboard
 
- exports.getDashboard = async (req, res) => {
+exports.getDashboard = async (req, res) => {
   const patientId = req.user.id;
 
   try {
@@ -134,20 +145,18 @@ exports.register = async (req, res) => {
       todayToken: todayToken
         ? {
             type: todayToken.appointment_type,
-            token: todayToken.token_number
+            token: todayToken.token_number,
           }
         : null,
-      appointments
+      appointments,
     });
-
   } catch (err) {
     return res.status(500).json({
       message: "Server error",
-      error: err.message
+      error: err.message,
     });
   }
 };
-
 
 // --------------------
 // Get Patient Profile (FIXED)
@@ -176,7 +185,9 @@ exports.getProfile = async (req, res) => {
 
     return res.status(200).json(rows[0]);
   } catch (err) {
-    return res.status(500).json({ message: "Server error", error: err.message });
+    return res
+      .status(500)
+      .json({ message: "Server error", error: err.message });
   }
 };
 
@@ -231,11 +242,13 @@ exports.updateProfile = async (req, res) => {
 
     return res.status(200).json({ message: "Profile updated successfully" });
   } catch (err) {
-    return res.status(500).json({ message: "Server error", error: err.message });
+    return res
+      .status(500)
+      .json({ message: "Server error", error: err.message });
   }
 };
 
-// Update changePassword 
+// Update changePassword
 
 exports.changePassword = async (req, res) => {
   try {
@@ -252,20 +265,16 @@ exports.changePassword = async (req, res) => {
     }
 
     // 🔍 Get current password
-    const [user] = await db.query(
-      "SELECT password FROM users WHERE id = ?",
-      [patientId]
-    );
+    const [user] = await db.query("SELECT password FROM users WHERE id = ?", [
+      patientId,
+    ]);
 
     if (user.length === 0) {
       return res.status(404).json({ message: "User not found" });
     }
 
     // 🔐 Compare current password
-    const isMatch = await bcrypt.compare(
-      currentPassword,
-      user[0].password
-    );
+    const isMatch = await bcrypt.compare(currentPassword, user[0].password);
 
     if (!isMatch) {
       return res.status(401).json({ message: "Current password is incorrect" });
@@ -274,25 +283,24 @@ exports.changePassword = async (req, res) => {
     // 🔒 Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    await db.query(
-      "UPDATE users SET password = ? WHERE id = ?",
-      [hashedPassword, patientId]
-    );
+    await db.query("UPDATE users SET password = ? WHERE id = ?", [
+      hashedPassword,
+      patientId,
+    ]);
 
     return res.status(200).json({
-      message: "Password changed successfully"
+      message: "Password changed successfully",
     });
-
   } catch (err) {
     return res.status(500).json({
       message: "Server error",
-      error: err.message
+      error: err.message,
     });
   }
 };
 
 // --------------------
-// searchVideoDoctors 
+// searchVideoDoctors
 
 exports.searchVideoDoctors = async (req, res) => {
   const search = req.query.search || "";
@@ -348,17 +356,16 @@ exports.bookVideoAppointment = async (req, res) => {
 
     await db.query(
       `INSERT INTO appointments
-       (appointment_type, patient_id, doctor_id,
-        appointment_date, appointment_time, status)
-       VALUES ('VIDEO', ?, ?, ?, ?, 'PENDING')`,
-      [patientId, doctorId, appointmentDate, appointmentTime]
+   (appointment_type, patient_id, family_member_id, doctor_id,
+    appointment_date, token_number, status, created_by)
+   VALUES (?, ?, ?, ?, CURDATE(), ?, 'PENDING', 'PATIENT')`,
+      [appointmentType, patientId, familyMemberId, doctorId, tokenNumber]
     );
 
     return res.status(201).json({
       message: "Video appointment booked",
-      status: "PENDING"
+      status: "PENDING",
     });
-
   } catch (err) {
     return res.status(500).json({ message: "Server error" });
   }
@@ -390,7 +397,6 @@ exports.getVideoAppointments = async (req, res) => {
   }
 };
 
-
 exports.cancelVideoAppointment = async (req, res) => {
   const patientId = req.user.id;
   const appointmentId = req.params.id;
@@ -411,7 +417,7 @@ exports.cancelVideoAppointment = async (req, res) => {
     }
 
     return res.status(200).json({
-      message: "Video appointment cancelled"
+      message: "Video appointment cancelled",
     });
   } catch (err) {
     return res.status(500).json({ message: "Server error" });
@@ -428,7 +434,7 @@ exports.rescheduleVideoAppointment = async (req, res) => {
   // --------------------
   if (!appointmentDate || !appointmentTime) {
     return res.status(400).json({
-      message: "appointmentDate and appointmentTime are required"
+      message: "appointmentDate and appointmentTime are required",
     });
   }
 
@@ -447,13 +453,13 @@ exports.rescheduleVideoAppointment = async (req, res) => {
 
     if (appointments.length === 0) {
       return res.status(404).json({
-        message: "Video appointment not found"
+        message: "Video appointment not found",
       });
     }
 
     if (!["PENDING", "ACCEPTED"].includes(appointments[0].status)) {
       return res.status(400).json({
-        message: "Appointment cannot be rescheduled"
+        message: "Appointment cannot be rescheduled",
       });
     }
 
@@ -476,7 +482,7 @@ exports.rescheduleVideoAppointment = async (req, res) => {
 
     if (existing.length > 0) {
       return res.status(409).json({
-        message: "Selected slot is already booked"
+        message: "Selected slot is already booked",
       });
     }
 
@@ -491,17 +497,15 @@ exports.rescheduleVideoAppointment = async (req, res) => {
     );
 
     return res.status(200).json({
-      message: "Video appointment rescheduled successfully"
+      message: "Video appointment rescheduled successfully",
     });
-
   } catch (err) {
     return res.status(500).json({
       message: "Server error",
-      error: err.message
+      error: err.message,
     });
   }
 };
-
 
 // PATIENT CLINIC / HOSPITAL BOOKING
 
@@ -528,22 +532,22 @@ exports.bookVisitAppointment = async (req, res) => {
 
     await db.query(
       `INSERT INTO appointments
-       (appointment_type, patient_id, doctor_id,
-        appointment_date, token_number, status, created_by)
-       VALUES ('CLINIC', ?, ?, CURDATE(), ?, 'PENDING', 'PATIENT')`,
-      [patientId, doctorId, nextToken]
+   (appointment_type, patient_id, family_member_id, doctor_id,
+    appointment_date, token_number, status, created_by)
+   VALUES (?, ?, ?, ?, CURDATE(), ?, 'PENDING', 'PATIENT')`,
+      [appointmentType, patientId, familyMemberId, doctorId, tokenNumber]
     );
 
     res.status(201).json({
       message: "Clinic appointment booked",
-      token: nextToken
+      token: nextToken,
     });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
 };
 
-// PATIENT searchVisitDoctors 
+// PATIENT searchVisitDoctors
 
 exports.searchVisitDoctors = async (req, res) => {
   const search = req.query.search || "";
@@ -572,7 +576,7 @@ exports.searchVisitDoctors = async (req, res) => {
   }
 };
 
-// PATIENT searchVisitDoctors 
+// PATIENT searchVisitDoctors
 
 exports.getClinicAppointments = async (req, res) => {
   const patientId = req.user.id;
@@ -663,14 +667,9 @@ exports.qrBookVisit = async (req, res) => {
   const patientId = req.user.id;
   const { doctorId, appointmentType } = req.body;
 
-  if (!doctorId || !["CLINIC","HOSPITAL"].includes(appointmentType)) {
-    return res.status(400).json({ message: "Invalid request" });
-  }
-
   try {
-    // 🔢 token logic
-    const [[row]] = await db.query(
-      `SELECT MAX(token_number) AS lastToken
+    const [[maxToken]] = await db.query(
+      `SELECT MAX(token_number) AS token
        FROM appointments
        WHERE doctor_id = ?
        AND appointment_date = CURDATE()
@@ -678,7 +677,7 @@ exports.qrBookVisit = async (req, res) => {
       [doctorId, appointmentType]
     );
 
-    const nextToken = (row.lastToken || 0) + 1;
+    const nextToken = (maxToken.token || 0) + 1;
 
     await db.query(
       `INSERT INTO appointments
@@ -689,15 +688,13 @@ exports.qrBookVisit = async (req, res) => {
     );
 
     return res.status(201).json({
-      message: "QR booking successful",
-      token: nextToken
+      message: "QR appointment booked",
+      token: nextToken,
     });
-
   } catch (err) {
     return res.status(500).json({ message: "Server error" });
   }
 };
-
 
 exports.getTokenStatus = async (req, res) => {
   const patientId = req.user.id;
@@ -729,20 +726,18 @@ exports.getTokenStatus = async (req, res) => {
       [
         appointment.doctor_id,
         appointment.appointment_date,
-        appointment.appointment_type
+        appointment.appointment_type,
       ]
     );
 
     return res.json({
       yourToken: appointment.token_number,
-      nowServing: current.currentToken || null
+      nowServing: current.currentToken || null,
     });
-
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
 };
-
 
 exports.getUpcomingAppointments = async (req, res) => {
   const patientId = req.user.id;
@@ -782,24 +777,16 @@ exports.getUpcomingAppointments = async (req, res) => {
   }
 };
 
-
 exports.getPatientNotifications = async (req, res) => {
   const patientId = req.user.id;
 
   try {
     const [notifications] = await db.query(
-      `SELECT
-        a.id,
-        d.doctorName,
-        a.appointment_type,
-        a.status,
-        a.created_at
-       FROM appointments a
-       JOIN doctors d ON a.doctor_id = d.user_id
-       WHERE a.patient_id = ?
-       AND a.status IN ('ACCEPTED','REJECTED','COMPLETED')
-       ORDER BY a.created_at DESC
-       LIMIT 20`,
+      `SELECT id, title, message, appointment_id, is_read, created_at
+       FROM notifications
+       WHERE receiver_id = ?
+       AND receiver_role = 'PATIENT'
+       ORDER BY created_at DESC`,
       [patientId]
     );
 
@@ -807,6 +794,20 @@ exports.getPatientNotifications = async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
+};
+
+exports.markNotificationRead = async (req, res) => {
+  const patientId = req.user.id;
+  const { id } = req.params;
+
+  await db.query(
+    `UPDATE notifications
+     SET is_read = TRUE
+     WHERE id = ? AND receiver_id = ?`,
+    [id, patientId]
+  );
+
+  res.json({ message: "Notification marked as read" });
 };
 
 
@@ -865,22 +866,14 @@ exports.hardCancelAppointment = async (req, res) => {
   }
 };
 
-
 exports.addFamilyMember = async (req, res) => {
   const patientId = req.user.id;
-  const {
-    fullName,
-    gender,
-    dob,
-    bloodGroup,
-    heightCm,
-    weightKg,
-    relation
-  } = req.body;
+  const { fullName, gender, dob, bloodGroup, heightCm, weightKg, relation } =
+    req.body;
 
   if (!fullName || !relation) {
     return res.status(400).json({
-      message: "fullName and relation are required"
+      message: "fullName and relation are required",
     });
   }
 
@@ -897,21 +890,20 @@ exports.addFamilyMember = async (req, res) => {
         bloodGroup || null,
         heightCm || null,
         weightKg || null,
-        relation
+        relation,
       ]
     );
 
     res.status(201).json({
-      message: "Family member added successfully"
+      message: "Family member added successfully",
     });
   } catch (err) {
     res.status(500).json({
       message: "Server error",
-      error: err.message
+      error: err.message,
     });
   }
 };
-
 
 exports.getFamilyMembers = async (req, res) => {
   const patientId = req.user.id;
@@ -939,40 +931,53 @@ exports.getFamilyMembers = async (req, res) => {
   } catch (err) {
     res.status(500).json({
       message: "Server error",
-      error: err.message
+      error: err.message,
     });
   }
 };
-
 
 exports.updateFamilyMember = async (req, res) => {
   const patientId = req.user.id;
   const { id } = req.params;
 
-  const {
-    fullName,
-    gender,
-    dob,
-    bloodGroup,
-    heightCm,
-    weightKg,
-    relation
-  } = req.body;
+  const { fullName, gender, dob, bloodGroup, heightCm, weightKg, relation } =
+    req.body;
 
   const fields = [];
   const values = [];
 
-  if (fullName) { fields.push("full_name = ?"); values.push(fullName); }
-  if (gender) { fields.push("gender = ?"); values.push(gender); }
-  if (dob) { fields.push("dob = ?"); values.push(dob); }
-  if (bloodGroup) { fields.push("blood_group = ?"); values.push(bloodGroup); }
-  if (heightCm) { fields.push("height_cm = ?"); values.push(heightCm); }
-  if (weightKg) { fields.push("weight_kg = ?"); values.push(weightKg); }
-  if (relation) { fields.push("relation = ?"); values.push(relation); }
+  if (fullName) {
+    fields.push("full_name = ?");
+    values.push(fullName);
+  }
+  if (gender) {
+    fields.push("gender = ?");
+    values.push(gender);
+  }
+  if (dob) {
+    fields.push("dob = ?");
+    values.push(dob);
+  }
+  if (bloodGroup) {
+    fields.push("blood_group = ?");
+    values.push(bloodGroup);
+  }
+  if (heightCm) {
+    fields.push("height_cm = ?");
+    values.push(heightCm);
+  }
+  if (weightKg) {
+    fields.push("weight_kg = ?");
+    values.push(weightKg);
+  }
+  if (relation) {
+    fields.push("relation = ?");
+    values.push(relation);
+  }
 
   if (fields.length === 0) {
     return res.status(400).json({
-      message: "No fields to update"
+      message: "No fields to update",
     });
   }
 
@@ -988,21 +993,20 @@ exports.updateFamilyMember = async (req, res) => {
 
     if (result.affectedRows === 0) {
       return res.status(404).json({
-        message: "Family member not found"
+        message: "Family member not found",
       });
     }
 
     res.json({
-      message: "Family member updated successfully"
+      message: "Family member updated successfully",
     });
   } catch (err) {
     res.status(500).json({
       message: "Server error",
-      error: err.message
+      error: err.message,
     });
   }
 };
-
 
 exports.deleteFamilyMember = async (req, res) => {
   const patientId = req.user.id;
@@ -1017,17 +1021,55 @@ exports.deleteFamilyMember = async (req, res) => {
 
     if (result.affectedRows === 0) {
       return res.status(404).json({
-        message: "Family member not found"
+        message: "Family member not found",
       });
     }
 
     res.json({
-      message: "Family member deleted successfully"
+      message: "Family member deleted successfully",
     });
   } catch (err) {
     res.status(500).json({
       message: "Server error",
-      error: err.message
+      error: err.message,
     });
   }
 };
+
+exports.getIncomingAppointments = async (req, res) => {
+  const doctorId = req.user.id;
+
+  try {
+    const [appointments] = await db.query(
+      `SELECT
+        a.id,
+        a.appointment_type,
+        a.appointment_date,
+        a.appointment_time,
+        a.token_number,
+        a.status,
+        a.created_by,
+
+        -- Patient info
+        u.loginId AS patientEmail,
+
+        -- Family member info
+        fm.full_name AS familyMemberName
+
+       FROM appointments a
+       LEFT JOIN users u ON a.patient_id = u.id
+       LEFT JOIN family_members fm ON a.family_member_id = fm.id
+       WHERE a.doctor_id = ?
+       AND a.status = 'PENDING'
+       ORDER BY a.appointment_date, a.token_number`,
+      [doctorId]
+    );
+
+    res.json({ appointments });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+
+

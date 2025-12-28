@@ -4,6 +4,8 @@ const patientController = require("../controllers/patientController");
 const staffController = require("../controllers/staffController");
 const authController = require("../controllers/authController");
 const { verifyToken } = require("../middleware/auth");
+const { allowRoles } = require("../middleware/roles");
+const { requireActiveUser } = require("../middleware/activeUser"); 
 
 // Public routes
 router.post("/register", patientController.register);
@@ -20,8 +22,13 @@ router.put("/change-password", verifyToken, patientController.changePassword);
 router.get(
   "/dashboard",
   verifyToken,
+  requireActiveUser,
+  allowRoles("PATIENT"),
   patientController.getDashboard
 );
+
+
+
 
 
 // video consultation
@@ -77,11 +84,22 @@ router.get(
   patientController.getUpcomingAppointments
 );
 
+
+
+
 router.get(
   "/notifications",
   verifyToken,
   patientController.getPatientNotifications
 );
+
+router.get(
+  "/notifications/:id/read",
+  verifyToken,
+  patientController.markNotificationRead 
+);
+
+
 
 router.get(
   "/appointments/:id",
@@ -127,5 +145,6 @@ router.delete(
   patientController.deleteFamilyMember
 );
 
+//
 
 module.exports = router;

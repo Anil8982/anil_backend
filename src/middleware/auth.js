@@ -1,4 +1,3 @@
-// middleware/auth.js
 const jwt = require("jsonwebtoken");
 
 exports.verifyToken = (req, res, next) => {
@@ -12,7 +11,6 @@ exports.verifyToken = (req, res, next) => {
     const token = authHeader.split(" ")[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // ✅ SIMPLE & CONSISTENT
     req.user = {
       id: decoded.id,
       role: decoded.role,
