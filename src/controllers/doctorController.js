@@ -157,42 +157,6 @@ exports.register = async (req, res) => {
   }
 };
 
-// doctor Screen getIncomingAppointments
-
-// exports.getIncomingAppointments = async (req, res) => {
-//   const doctorId = req.user.id;
-
-//   try {
-//     const [appointments] = await db.query(
-//       `SELECT
-//         a.id,
-//         a.appointment_type,
-//         a.appointment_date,
-//         a.appointment_time,
-//         a.token_number,
-//         a.status,
-//         a.created_by,
-
-//         -- Patient info
-//         u.loginId AS patientEmail,
-
-//         -- Family member info
-//         fm.full_name AS familyMemberName
-
-//        FROM appointments a
-//        LEFT JOIN users u ON a.patient_id = u.id
-//        LEFT JOIN family_members fm ON a.family_member_id = fm.id
-//        WHERE a.doctor_id = ?
-//        AND a.status = 'PENDING'
-//        ORDER BY a.appointment_date, a.token_number`,
-//       [doctorId]
-//     );
-
-//     res.json({ appointments });
-//   } catch (err) {
-//     res.status(500).json({ message: "Server error" });
-//   }
-// };
 
 // doctor  respondAppointment
 

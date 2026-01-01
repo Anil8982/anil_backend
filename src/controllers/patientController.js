@@ -1,7 +1,7 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 
-// --------------------
+
 // Patient Registration
 // --------------------
 exports.register = async (req, res) => {
@@ -576,6 +576,45 @@ exports.searchVisitDoctors = async (req, res) => {
   }
 };
 
+exports.getCities = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT DISTINCT city AS name
+      FROM doctors
+      WHERE status = 'APPROVED'
+      AND city IS NOT NULL
+      ORDER BY city
+    `);
+
+    res.status(200).json(rows);
+  } catch (err) {
+    res.status(500).json({
+      message: "Failed to fetch cities",
+      error: err.message,
+    });
+  }
+};
+
+// disease controller
+exports.getDiseases = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT DISTINCT specialization AS name
+      FROM doctors
+      WHERE status = 'APPROVED'
+      AND specialization IS NOT NULL
+      ORDER BY specialization
+    `);
+
+    res.status(200).json(rows);
+  } catch (err) {
+    res.status(500).json({
+      message: "Failed to fetch diseases",
+      error: err.message,
+    });
+  }
+};
+
 // PATIENT searchVisitDoctors
 
 exports.getClinicAppointments = async (req, res) => {
@@ -809,7 +848,6 @@ exports.markNotificationRead = async (req, res) => {
 
   res.json({ message: "Notification marked as read" });
 };
-
 
 exports.getAppointmentDetail = async (req, res) => {
   const patientId = req.user.id;
@@ -1070,6 +1108,3 @@ exports.getIncomingAppointments = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
-
-

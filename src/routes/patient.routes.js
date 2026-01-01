@@ -34,6 +34,7 @@ router.get(
 // video consultation
 
 router.get("/video/doctors", verifyToken, patientController.searchVideoDoctors);
+
 router.post(
   "/video/appointments",
   verifyToken,
@@ -59,6 +60,9 @@ router.put(
 
 router.post("/visit/appointments",verifyToken,patientController.bookVisitAppointment);
 router.get("/visit/doctors", verifyToken, patientController.searchVisitDoctors);
+router.get("/cities", patientController.getCities);
+router.get("/diseases", patientController.getDiseases);
+
 router.get("/visit/appointments",verifyToken,patientController.getClinicAppointments);
 router.put("/visit/appointments/:id/cancel",verifyToken,patientController.cancelClinicAppointment);
 router.get(
