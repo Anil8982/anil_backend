@@ -6,9 +6,11 @@ const { verifyToken } = require("../middleware/auth");
 const { allowRoles } = require("../middleware/roles");
 const { requireActiveUser } = require("../middleware/activeUser");
 
+// Auth
 router.post("/register", doctorController.register);
 router.post("/login", authController.login);
 
+// Dashboard
 router.get(
   "/dashboard",
   verifyToken,
@@ -16,6 +18,30 @@ router.get(
   doctorController.getDashboard
 );
 
+// Profile
+router.get(
+  "/profile",
+  verifyToken,
+  allowRoles("DOCTOR"),
+  doctorController.getDoctorProfile
+);
+
+router.put(
+  "/profile",
+  verifyToken,
+  allowRoles("DOCTOR"),
+  doctorController.updateDoctorProfile
+);
+
+// Availability
+router.put(
+  "/availability",
+  verifyToken,
+  allowRoles("DOCTOR"),
+  doctorController.updateAvailability
+);
+
+// Appointments
 router.get(
   "/appointments/incoming",
   verifyToken,
@@ -24,7 +50,7 @@ router.get(
 );
 
 router.put(
-  "/appointments/:id/respond",
+  "/respond-appointment/:id",
   verifyToken,
   allowRoles("DOCTOR"),
   doctorController.respondAppointment
@@ -51,14 +77,6 @@ router.put(
   doctorController.completeAppointment
 );
 
-router.get(
-  "/notifications",
-  verifyToken,
-  allowRoles("DOCTOR"),
-  doctorController.getDoctorNotifications
-);
-
-
 router.post(
   "/appointments/next-token",
   verifyToken,
@@ -66,5 +84,55 @@ router.post(
   allowRoles("DOCTOR"),
   doctorController.callNextToken
 );
+
+router.get(
+  "/appointments/history",
+  verifyToken,
+  requireActiveUser,
+  allowRoles("DOCTOR"),
+  doctorController.getDoctorAppointmentHistory
+);
+
+// Notifications
+router.get(
+  "/notifications",
+  verifyToken,
+  allowRoles("DOCTOR"),
+  doctorController.getDoctorNotifications
+);
+
+// router.put(
+//   "/notifications/:id/read",
+//   verifyToken,
+//   allowRoles("DOCTOR"),
+//   doctorController.markDoctorNotificationRead
+// );
+
+router.put(
+  "/notifications/:id/unread",
+  verifyToken,
+  allowRoles("DOCTOR"),
+  doctorController.getDoctorUnreadCount
+);
+
+router.get(
+  "/reviews",
+  verifyToken,
+  allowRoles("DOCTOR"),
+  doctorController.getDoctorReviews
+);
+
+router.post(
+  "/appointments/:id/summary",
+  verifyToken,
+  allowRoles("DOCTOR"),
+  doctorController.addVisitSummary
+);
+
+// router.put(
+//   "/appointments/:id/hard-cancel",
+//   verifyToken,
+//   doctorController.hardCancelAppointment
+// );
 
 module.exports = router;

@@ -5,20 +5,18 @@ const staffController = require("../controllers/staffController");
 const authController = require("../controllers/authController");
 const { verifyToken } = require("../middleware/auth");
 const { allowRoles } = require("../middleware/roles");
-const { requireActiveUser } = require("../middleware/activeUser"); 
+const { requireActiveUser } = require("../middleware/activeUser");
 
-// Public routes
+// Auth
 router.post("/register", patientController.register);
 router.post("/login", authController.login);
 
-// Protected routes
-router.get("/profile", verifyToken, patientController.getProfile);
+// Profile
+router.get("/getprofile", verifyToken, patientController.getProfile);
 router.put("/updateProfile", verifyToken, patientController.updateProfile);
 router.put("/change-password", verifyToken, patientController.changePassword);
 
-
-// dashboard routes
-
+// Dashboard
 router.get(
   "/dashboard",
   verifyToken,
@@ -27,55 +25,36 @@ router.get(
   patientController.getDashboard
 );
 
-
-
-
-
-// video consultation
-
-router.get("/video/doctors", verifyToken, patientController.searchVideoDoctors);
-
-router.post(
-  "/video/appointments",
-  verifyToken,
-  patientController.bookVideoAppointment
-);
-router.get(
-  "/video/appointments",
-  verifyToken,
-  patientController.getVideoAppointments
-);
-router.put(
-  "/video/appointments/:id/cancel",
-  verifyToken,
-  patientController.cancelVideoAppointment
-);
-router.put(
-  "/video/appointments/:id/reschedule",
-  verifyToken,
-  patientController.rescheduleVideoAppointment
-);
-
-// PATIENT CLINIC / HOSPITAL BOOKING
-
-router.post("/visit/appointments",verifyToken,patientController.bookVisitAppointment);
+// Search & filters
 router.get("/visit/doctors", verifyToken, patientController.searchVisitDoctors);
 router.get("/cities", patientController.getCities);
 router.get("/diseases", patientController.getDiseases);
+router.get("/clinicname", patientController.getPlaceNames);
+router.get("/doctorname", patientController.getDoctorNames);
 
-router.get("/visit/appointments",verifyToken,patientController.getClinicAppointments);
-router.put("/visit/appointments/:id/cancel",verifyToken,patientController.cancelClinicAppointment);
+// Booking
+router.post(
+  "/visit/appointments",
+  verifyToken,
+  patientController.bookVisitAppointment
+);
+router.get(
+  "/getclinicvisit/appointments",
+  verifyToken,
+  patientController.getClinicAppointments
+);
+router.put(
+  "/visit/appointments/:id/cancel",
+  verifyToken,
+  patientController.cancelAppointment
+);
 router.get(
   "/visit/appointments/history",
   verifyToken,
   patientController.getVisitAppointmentHistory
 );
 
-router.post(
-  "/visit/qr-book",
-  verifyToken,
-  patientController.qrBookVisit
-);
+router.post("/visit/qr-book", verifyToken, patientController.qrBookVisit);
 router.get(
   "/visit/token-status/:appointmentId",
   verifyToken,
@@ -90,65 +69,53 @@ router.get(
 
 
 
+// Staff manual booking
+// router.post(
+//   "/visit/manual-book",
+//   verifyToken,
+//   allowRoles("STAFF", "NURSE"),
+//   staffController.manualVisitBooking
+// );
 
+
+router.post(
+  "/doctor-feedback",
+  verifyToken,
+  allowRoles("PATIENT"),
+  patientController.submitDoctorReview
+);
+
+// Notifications
 router.get(
   "/notifications",
   verifyToken,
   patientController.getPatientNotifications
 );
-
-router.get(
+router.put(
   "/notifications/:id/read",
   verifyToken,
-  patientController.markNotificationRead 
+  patientController.markNotificationRead
 );
 
-
-
-router.get(
-  "/appointments/:id",
-  verifyToken,
-  patientController.getAppointmentDetail
-);
-
-router.put(
-  "/appointments/:id/hard-cancel",
-  verifyToken,
-  patientController.hardCancelAppointment
-);
-
-
-router.post(
-  "/visit/manual-book",
-  verifyToken,         
-  staffController.manualVisitBooking
-);
-
-router.post(
-  "/addfamily",
-  verifyToken,
-  patientController.addFamilyMember
-);
-
-router.get(
-  "/getfamily",
-  verifyToken,
-  patientController.getFamilyMembers
-);
-
+// Family
+router.post("/addfamily", verifyToken, patientController.addFamilyMember);
+router.get("/getfamily", verifyToken, patientController.getFamilyMembers);
 router.put(
   "/updatefamily/:id",
   verifyToken,
   patientController.updateFamilyMember
 );
-
-
 router.delete(
   "/deletefamily/:id",
   verifyToken,
   patientController.deleteFamilyMember
 );
 
-//
+router.get(
+  "/appointments/:id/summary",
+  verifyToken,
+  allowRoles("PATIENT"),
+  patientController.getVisitSummary
+);
 
 module.exports = router;

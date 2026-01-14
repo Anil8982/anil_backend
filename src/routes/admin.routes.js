@@ -23,19 +23,76 @@ router.get(
 );
 
 router.put(
-  "/doctors/:id/approve",
+  "/doctor/approve/:id",
   verifyToken,
-  requireActiveUser,
   allowRoles("ADMIN"),
   adminController.approveDoctor
 );
 
 router.put(
-  "/doctors/:id/reject",
+  "/doctor/reject/:id",
   verifyToken,
-  requireActiveUser,
   allowRoles("ADMIN"),
   adminController.rejectDoctor
 );
+
+
+// Patient management
+
+
+router.get(
+  "/patients",
+  verifyToken,
+  requireActiveUser,
+  allowRoles("ADMIN"),
+  adminController.getPatients
+);
+
+router.put(
+  "/users/:id/block",
+  verifyToken,
+  requireActiveUser,
+  allowRoles("ADMIN"),
+  adminController.blockUser
+);
+
+router.put(
+  "/users/:id/unblock",
+  verifyToken,
+  requireActiveUser,
+  allowRoles("ADMIN"),
+  adminController.unblockUser
+);
+
+// Appointments (Admin power)
+
+router.get(
+  "/appointments",
+  verifyToken,
+  requireActiveUser,
+  allowRoles("ADMIN"),
+  adminController.getAllAppointments
+);
+
+router.put(
+  "/appointments/:id/cancel",
+  verifyToken,
+  requireActiveUser,
+  allowRoles("ADMIN"),
+  adminController.forceCancelAppointment
+);
+
+
+// analytics
+
+router.get(
+  "/analytics",
+  verifyToken,
+  requireActiveUser,
+  allowRoles("ADMIN"),
+  adminController.getAdminAnalytics
+);
+
+
 
 module.exports = router;

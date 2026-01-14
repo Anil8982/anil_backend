@@ -1,6 +1,24 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
+const { sendEmail } = require("../../utils/email");
+const { sendWhatsApp } = require("../../utils/whatsapp");
+const { createNotification } = require("../../utils/patientNotification");
 
+// Add Family Members helpers
+const ALLOWED_RELATIONS = [
+  "FATHER",
+  "MOTHER",
+  "SPOUSE",
+  "SON",
+  "DAUGHTER",
+  "BROTHER",
+  "SISTER",
+  "OTHER",
+];
+// Add Family Members helpers
+const isFutureDate = (date) => {
+  return new Date(date) > new Date();
+};
 
 // Patient Registration
 // --------------------
@@ -47,10 +65,10 @@ exports.register = async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    // Check existing user
+    // ✅ Check existing user (EMAIL OR MOBILE)
     const [existingUser] = await connection.query(
-      "SELECT id FROM users WHERE loginId = ?",
-      [email]
+      `SELECT id FROM users WHERE email = ? OR mobile = ?`,
+      [email, phone]
     );
 
     if (existingUser.length > 0) {
@@ -61,14 +79,17 @@ exports.register = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // ✅ INSERT INTO USERS (NO loginId)
     const [userResult] = await connection.query(
-      "INSERT INTO users (loginId, password, role) VALUES (?, ?, 'PATIENT')",
-      [email, hashedPassword]
+      `INSERT INTO users (email, mobile, password, role)
+       VALUES (?, ?, ?, 'PATIENT')`,
+      [email, phone, hashedPassword]
     );
 
+    // ✅ INSERT INTO PATIENTS
     await connection.query(
-      `INSERT INTO patients (user_id, fullName, phone, gender, dob,email)
-       VALUES (?, ?, ?, ?, ?,?)`,
+      `INSERT INTO patients (user_id, fullName, phone, gender, dob, email)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [userResult.insertId, fullName, phone, gender, dob, email]
     );
 
@@ -84,6 +105,174 @@ exports.register = async (req, res) => {
       .json({ message: "Server error", error: err.message });
   }
 };
+
+// --------------------
+// Get Patient Profile (FIXED)
+// --------------------
+exports.getProfile = async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const [rows] = await db.query(
+      `SELECT 
+        p.id,
+        p.fullName,
+        p.phone,
+        u.email,
+        u.mobile,
+        p.gender,
+        p.dob
+       FROM patients p
+       JOIN users u ON p.user_id = u.id
+       WHERE p.user_id = ?`,
+      [userId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Patient not found" });
+    }
+
+    return res.status(200).json(rows[0]);
+  } catch (err) {
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
+
+// --------------------
+// Update Patient Profile
+// --------------------
+exports.updateProfile = async (req, res) => {
+  const userId = req.user.id;
+  const { fullName, phone, gender, dob } = req.body;
+
+  const patientFields = [];
+  const patientValues = [];
+
+  try {
+    // -------- phone update (users + patients)
+    if (phone) {
+      if (!/^\d{10}$/.test(phone)) {
+        return res.status(400).json({ message: "Invalid phone number" });
+      }
+
+      // check duplicate mobile
+      const [existing] = await db.query(
+        `SELECT id FROM users WHERE mobile = ? AND id != ?`,
+        [phone, userId]
+      );
+
+      if (existing.length > 0) {
+        return res.status(409).json({ message: "Mobile already in use" });
+      }
+
+      await db.query(`UPDATE users SET mobile = ? WHERE id = ?`, [
+        phone,
+        userId,
+      ]);
+
+      patientFields.push("phone = ?");
+      patientValues.push(phone);
+    }
+
+    if (fullName) {
+      patientFields.push("fullName = ?");
+      patientValues.push(fullName);
+    }
+
+    if (gender) {
+      patientFields.push("gender = ?");
+      patientValues.push(gender);
+    }
+
+    if (dob) {
+      patientFields.push("dob = ?");
+      patientValues.push(dob);
+    }
+
+    if (patientFields.length === 0) {
+      return res.status(400).json({ message: "No fields provided to update" });
+    }
+
+    patientValues.push(userId);
+
+    const [result] = await db.query(
+      `UPDATE patients 
+       SET ${patientFields.join(", ")} 
+       WHERE user_id = ?`,
+      patientValues
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Patient not found" });
+    }
+
+    return res.status(200).json({
+      message: "Profile updated successfully",
+    });
+  } catch (err) {
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
+
+// Update changePassword
+
+exports.changePassword = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ message: "Passwords do not match" });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        message: "Password must be at least 8 characters",
+      });
+    }
+
+    const [users] = await db.query(`SELECT password FROM users WHERE id = ?`, [
+      userId,
+    ]);
+
+    if (users.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, users[0].password);
+
+    if (!isMatch) {
+      return res.status(401).json({ message: "Current password is incorrect" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await db.query(`UPDATE users SET password = ? WHERE id = ?`, [
+      hashedPassword,
+      userId,
+    ]);
+
+    return res.status(200).json({
+      message: "Password changed successfully",
+    });
+  } catch (err) {
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
+
 // Patient getDashboard
 
 exports.getDashboard = async (req, res) => {
@@ -103,24 +292,25 @@ exports.getDashboard = async (req, res) => {
     );
 
     // -------------------------------
-    // 2️⃣ Today's clinic / hospital token
+    // 2️⃣ Today's active token (with slot)
     // -------------------------------
     const [[todayToken]] = await db.query(
       `SELECT 
          appointment_type,
+         appointment_slot,
          token_number
        FROM appointments
        WHERE patient_id = ?
        AND appointment_date = CURDATE()
        AND appointment_type IN ('CLINIC','HOSPITAL')
        AND status IN ('PENDING','ACCEPTED')
-       ORDER BY token_number ASC
+       ORDER BY appointment_slot, token_number
        LIMIT 1`,
       [patientId]
     );
 
     // -------------------------------
-    // 3️⃣ Pending / Accepted list
+    // 3️⃣ Upcoming appointments list
     // -------------------------------
     const [appointments] = await db.query(
       `SELECT
@@ -129,14 +319,15 @@ exports.getDashboard = async (req, res) => {
         d.specialization,
         a.appointment_type,
         a.appointment_date,
-        a.appointment_time,
+        a.appointment_slot,
         a.token_number,
         a.status
        FROM appointments a
        JOIN doctors d ON a.doctor_id = d.user_id
        WHERE a.patient_id = ?
+       AND a.appointment_date >= CURDATE()
        AND a.status IN ('PENDING','ACCEPTED')
-       ORDER BY a.appointment_date ASC, a.token_number ASC`,
+       ORDER BY a.appointment_date ASC, a.appointment_slot, a.token_number`,
       [patientId]
     );
 
@@ -145,6 +336,7 @@ exports.getDashboard = async (req, res) => {
       todayToken: todayToken
         ? {
             type: todayToken.appointment_type,
+            slot: todayToken.appointment_slot,
             token: todayToken.token_number,
           }
         : null,
@@ -158,400 +350,13 @@ exports.getDashboard = async (req, res) => {
   }
 };
 
-// --------------------
-// Get Patient Profile (FIXED)
-// --------------------
-exports.getProfile = async (req, res) => {
-  const userId = req.user.id;
-
-  try {
-    const [rows] = await db.query(
-      `SELECT 
-        p.id,
-        p.fullName,
-        p.phone,
-        u.loginId AS email,
-        p.gender,
-        p.dob
-       FROM patients p
-       JOIN users u ON p.user_id = u.id
-       WHERE p.user_id = ?`,
-      [userId]
-    );
-
-    if (rows.length === 0) {
-      return res.status(404).json({ message: "Patient not found" });
-    }
-
-    return res.status(200).json(rows[0]);
-  } catch (err) {
-    return res
-      .status(500)
-      .json({ message: "Server error", error: err.message });
-  }
-};
-
-// --------------------
-// Update Patient Profile
-// --------------------
-exports.updateProfile = async (req, res) => {
-  const userId = req.user.id;
-  const { fullName, phone, gender, dob } = req.body;
-
-  const fields = [];
-  const values = [];
-
-  if (fullName) {
-    fields.push("fullName = ?");
-    values.push(fullName);
-  }
-
-  if (phone) {
-    if (!/^\d{10}$/.test(phone)) {
-      return res.status(400).json({ message: "Invalid phone number" });
-    }
-    fields.push("phone = ?");
-    values.push(phone);
-  }
-
-  if (gender) {
-    fields.push("gender = ?");
-    values.push(gender);
-  }
-
-  if (dob) {
-    fields.push("dob = ?");
-    values.push(dob);
-  }
-
-  if (fields.length === 0) {
-    return res.status(400).json({ message: "No fields provided to update" });
-  }
-
-  values.push(userId);
-
-  try {
-    const [result] = await db.query(
-      `UPDATE patients SET ${fields.join(", ")} WHERE user_id = ?`,
-      values
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: "Patient not found" });
-    }
-
-    return res.status(200).json({ message: "Profile updated successfully" });
-  } catch (err) {
-    return res
-      .status(500)
-      .json({ message: "Server error", error: err.message });
-  }
-};
-
-// Update changePassword
-
-exports.changePassword = async (req, res) => {
-  try {
-    const patientId = req.user.id; // ✅ FIXED HERE
-
-    const { currentPassword, newPassword, confirmPassword } = req.body;
-
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      return res.status(400).json({ message: "All fields are required" });
-    }
-
-    if (newPassword !== confirmPassword) {
-      return res.status(400).json({ message: "Passwords do not match" });
-    }
-
-    // 🔍 Get current password
-    const [user] = await db.query("SELECT password FROM users WHERE id = ?", [
-      patientId,
-    ]);
-
-    if (user.length === 0) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    // 🔐 Compare current password
-    const isMatch = await bcrypt.compare(currentPassword, user[0].password);
-
-    if (!isMatch) {
-      return res.status(401).json({ message: "Current password is incorrect" });
-    }
-
-    // 🔒 Hash new password
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    await db.query("UPDATE users SET password = ? WHERE id = ?", [
-      hashedPassword,
-      patientId,
-    ]);
-
-    return res.status(200).json({
-      message: "Password changed successfully",
-    });
-  } catch (err) {
-    return res.status(500).json({
-      message: "Server error",
-      error: err.message,
-    });
-  }
-};
-
-// --------------------
-// searchVideoDoctors
-
-exports.searchVideoDoctors = async (req, res) => {
-  const search = req.query.search || "";
-  const city = req.query.city || "";
-
-  try {
-    const [doctors] = await db.query(
-      `SELECT 
-        d.user_id AS doctorId,
-        d.doctorName,
-        d.specialization,
-        d.city,
-        d.consultationFee
-       FROM doctors d
-       WHERE d.status = 'APPROVED'
-       AND (
-         d.specialization LIKE ?
-         OR d.doctorName LIKE ?
-       )
-       AND d.city LIKE ?`,
-      [`%${search}%`, `%${search}%`, `%${city}%`]
-    );
-
-    return res.status(200).json({ doctors });
-  } catch (err) {
-    return res.status(500).json({ message: "Server error" });
-  }
-};
-
-exports.bookVideoAppointment = async (req, res) => {
-  const patientId = req.user.id;
-  const { doctorId, appointmentDate, appointmentTime } = req.body;
-
-  if (!doctorId || !appointmentDate || !appointmentTime) {
-    return res.status(400).json({ message: "Missing required fields" });
-  }
-
-  try {
-    // Prevent double booking
-    const [existing] = await db.query(
-      `SELECT id FROM appointments
-       WHERE doctor_id = ?
-       AND appointment_date = ?
-       AND appointment_time = ?
-       AND appointment_type = 'VIDEO'
-       AND status != 'CANCELLED'`,
-      [doctorId, appointmentDate, appointmentTime]
-    );
-
-    if (existing.length > 0) {
-      return res.status(409).json({ message: "Slot already booked" });
-    }
-
-    await db.query(
-      `INSERT INTO appointments
-   (appointment_type, patient_id, family_member_id, doctor_id,
-    appointment_date, token_number, status, created_by)
-   VALUES (?, ?, ?, ?, CURDATE(), ?, 'PENDING', 'PATIENT')`,
-      [appointmentType, patientId, familyMemberId, doctorId, tokenNumber]
-    );
-
-    return res.status(201).json({
-      message: "Video appointment booked",
-      status: "PENDING",
-    });
-  } catch (err) {
-    return res.status(500).json({ message: "Server error" });
-  }
-};
-
-exports.getVideoAppointments = async (req, res) => {
-  const patientId = req.user.id;
-
-  try {
-    const [appointments] = await db.query(
-      `SELECT 
-        a.id,
-        d.doctorName,
-        d.specialization,
-        a.appointment_date,
-        a.appointment_time,
-        a.status
-       FROM appointments a
-       JOIN doctors d ON a.doctor_id = d.user_id
-       WHERE a.patient_id = ?
-       AND a.appointment_type = 'VIDEO'
-       ORDER BY a.appointment_date DESC`,
-      [patientId]
-    );
-
-    return res.status(200).json({ appointments });
-  } catch (err) {
-    return res.status(500).json({ message: "Server error" });
-  }
-};
-
-exports.cancelVideoAppointment = async (req, res) => {
-  const patientId = req.user.id;
-  const appointmentId = req.params.id;
-
-  try {
-    const [result] = await db.query(
-      `UPDATE appointments
-       SET status = 'CANCELLED'
-       WHERE id = ?
-       AND patient_id = ?
-       AND appointment_type = 'VIDEO'
-       AND status IN ('PENDING','ACCEPTED')`,
-      [appointmentId, patientId]
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(400).json({ message: "Cannot cancel appointment" });
-    }
-
-    return res.status(200).json({
-      message: "Video appointment cancelled",
-    });
-  } catch (err) {
-    return res.status(500).json({ message: "Server error" });
-  }
-};
-
-exports.rescheduleVideoAppointment = async (req, res) => {
-  const patientId = req.user.id;
-  const appointmentId = req.params.id;
-  const { appointmentDate, appointmentTime } = req.body;
-
-  // --------------------
-  // Validation
-  // --------------------
-  if (!appointmentDate || !appointmentTime) {
-    return res.status(400).json({
-      message: "appointmentDate and appointmentTime are required",
-    });
-  }
-
-  try {
-    // --------------------
-    // Check appointment ownership + type + status
-    // --------------------
-    const [appointments] = await db.query(
-      `SELECT doctor_id, status
-       FROM appointments
-       WHERE id = ?
-       AND patient_id = ?
-       AND appointment_type = 'VIDEO'`,
-      [appointmentId, patientId]
-    );
-
-    if (appointments.length === 0) {
-      return res.status(404).json({
-        message: "Video appointment not found",
-      });
-    }
-
-    if (!["PENDING", "ACCEPTED"].includes(appointments[0].status)) {
-      return res.status(400).json({
-        message: "Appointment cannot be rescheduled",
-      });
-    }
-
-    const doctorId = appointments[0].doctor_id;
-
-    // --------------------
-    // Prevent double booking
-    // --------------------
-    const [existing] = await db.query(
-      `SELECT id
-       FROM appointments
-       WHERE doctor_id = ?
-       AND appointment_date = ?
-       AND appointment_time = ?
-       AND appointment_type = 'VIDEO'
-       AND status != 'CANCELLED'
-       AND id != ?`,
-      [doctorId, appointmentDate, appointmentTime, appointmentId]
-    );
-
-    if (existing.length > 0) {
-      return res.status(409).json({
-        message: "Selected slot is already booked",
-      });
-    }
-
-    // --------------------
-    // Update appointment
-    // --------------------
-    await db.query(
-      `UPDATE appointments
-       SET appointment_date = ?, appointment_time = ?
-       WHERE id = ?`,
-      [appointmentDate, appointmentTime, appointmentId]
-    );
-
-    return res.status(200).json({
-      message: "Video appointment rescheduled successfully",
-    });
-  } catch (err) {
-    return res.status(500).json({
-      message: "Server error",
-      error: err.message,
-    });
-  }
-};
-
 // PATIENT CLINIC / HOSPITAL BOOKING
-
-exports.bookVisitAppointment = async (req, res) => {
-  const patientId = req.user.id;
-  const { doctorId, appointmentType } = req.body;
-
-  if (!doctorId || appointmentType !== "CLINIC") {
-    return res.status(400).json({ message: "Invalid request" });
-  }
-
-  try {
-    // 🔢 Token generation
-    const [[row]] = await db.query(
-      `SELECT MAX(token_number) AS lastToken
-       FROM appointments
-       WHERE doctor_id = ?
-       AND appointment_date = CURDATE()
-       AND appointment_type = 'CLINIC'`,
-      [doctorId]
-    );
-
-    const nextToken = (row.lastToken || 0) + 1;
-
-    await db.query(
-      `INSERT INTO appointments
-   (appointment_type, patient_id, family_member_id, doctor_id,
-    appointment_date, token_number, status, created_by)
-   VALUES (?, ?, ?, ?, CURDATE(), ?, 'PENDING', 'PATIENT')`,
-      [appointmentType, patientId, familyMemberId, doctorId, tokenNumber]
-    );
-
-    res.status(201).json({
-      message: "Clinic appointment booked",
-      token: nextToken,
-    });
-  } catch (err) {
-    res.status(500).json({ message: "Server error" });
-  }
-};
 
 // PATIENT searchVisitDoctors
 
 exports.searchVisitDoctors = async (req, res) => {
-  const search = req.query.search || "";
-  const city = req.query.city || "";
+  const search = req.query.search?.trim() || "";
+  const city = req.query.city?.trim() || "";
 
   try {
     const [doctors] = await db.query(
@@ -559,23 +364,58 @@ exports.searchVisitDoctors = async (req, res) => {
         d.user_id AS doctorId,
         d.doctorName,
         d.specialization,
-        d.city
+        d.clinicName AS placeName,
+        d.place_type AS placeType,
+        d.city,
+        d.rating,
+        d.consultationFee
        FROM doctors d
        WHERE d.status = 'APPROVED'
        AND (
+         ? = '' OR
          d.doctorName LIKE ?
          OR d.specialization LIKE ?
+         OR d.clinicName LIKE ?
        )
-       AND d.city LIKE ?`,
-      [`%${search}%`, `%${search}%`, `%${city}%`]
+       AND (? = '' OR d.city LIKE ?)
+       ORDER BY d.rating DESC`,
+      [search, `%${search}%`, `%${search}%`, `%${search}%`, city, `%${city}%`]
     );
 
-    res.status(200).json({ doctors });
+    res.status(200).json({
+      count: doctors.length,
+      doctors,
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
   }
 };
 
+// getdoctorname controller
+
+exports.getDoctorNames = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT DISTINCT doctorName AS name
+      FROM doctors
+      WHERE status = 'APPROVED'
+      AND doctorName IS NOT NULL
+      ORDER BY doctorName
+    `);
+
+    res.status(200).json(rows);
+  } catch (err) {
+    res.status(500).json({
+      message: "Failed to fetch doctor names",
+      error: err.message,
+    });
+  }
+};
+
+// getCities controller
 exports.getCities = async (req, res) => {
   try {
     const [rows] = await db.query(`
@@ -615,7 +455,153 @@ exports.getDiseases = async (req, res) => {
   }
 };
 
-// PATIENT searchVisitDoctors
+//
+// returns both clinic & hospital names controller
+
+exports.getPlaceNames = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT DISTINCT clinicName AS name
+      FROM doctors
+      WHERE status = 'APPROVED'
+      AND clinicName IS NOT NULL
+      ORDER BY clinicName
+    `);
+
+    res.status(200).json(rows);
+  } catch (err) {
+    res.status(500).json({
+      message: "Failed to fetch place names",
+      error: err.message,
+    });
+  }
+};
+
+// PATIENT bookVisitAppointment
+
+exports.bookVisitAppointment = async (req, res) => {
+  const patientId = req.user.id;
+  const {
+    doctorId,
+    appointmentType,
+    bookingFor,
+    familyMemberId,
+    appointmentDate,
+    slot,
+  } = req.body;
+
+  if (!doctorId || !appointmentType || !appointmentDate || !slot) {
+    return res.status(400).json({ message: "Missing required fields" });
+  }
+
+  if (!["CLINIC", "HOSPITAL"].includes(appointmentType)) {
+    return res.status(400).json({ message: "Invalid appointment type" });
+  }
+
+  // Date validation (next 7 days)
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const selectedDate = new Date(appointmentDate);
+  selectedDate.setHours(0, 0, 0, 0);
+
+  const diffDays = (selectedDate - today) / (1000 * 60 * 60 * 24);
+  if (diffDays < 0 || diffDays > 7) {
+    return res.status(400).json({
+      message: "Appointment allowed only for next 7 days",
+    });
+  }
+
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    // 🔒 Token lock
+    const [[row]] = await connection.query(
+      `SELECT MAX(token_number) AS lastToken
+       FROM appointments
+       WHERE doctor_id = ?
+       AND appointment_date = ?
+       AND appointment_type = ?
+       AND appointment_slot = ?
+       FOR UPDATE`,
+      [doctorId, appointmentDate, appointmentType, slot]
+    );
+
+    const nextToken = (row.lastToken || 0) + 1;
+
+    const [insertResult] = await connection.query(
+      `INSERT INTO appointments
+       (appointment_type, patient_id, family_member_id, doctor_id,
+        appointment_date, appointment_slot, token_number,
+        status, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 'PATIENT')`,
+      [
+        appointmentType,
+        patientId,
+        bookingFor === "FAMILY_MEMBER" ? familyMemberId : null,
+        doctorId,
+        appointmentDate,
+        slot,
+        nextToken,
+      ]
+    );
+
+    const appointmentId = insertResult.insertId;
+
+    // ⏰ REMINDERS
+    await connection.query(
+      `INSERT INTO reminders (appointment_id, reminder_type, scheduled_at)
+       VALUES
+       (?, 'DAY_BEFORE', DATE_SUB(?, INTERVAL 1 DAY)),
+       (?, 'SAME_DAY', DATE_SUB(?, INTERVAL 2 HOUR))`,
+      [appointmentId, appointmentDate, appointmentId, appointmentDate]
+    );
+
+    await connection.commit();
+
+    // 🔔 PATIENT CONTACT
+    const [[patient]] = await db.query(
+      `SELECT email, mobile FROM users WHERE id = ?`,
+      [patientId]
+    );
+
+    // EMAIL
+    await sendEmail(
+      patient.email,
+      "Appointment Booked",
+      `Your appointment is booked.<br>
+       Date: ${appointmentDate}<br>
+       Slot: ${slot}<br>
+       Token: ${nextToken}`
+    );
+
+    // WHATSAPP
+    if (patient.mobile) {
+      await sendWhatsApp(
+        patient.mobile,
+        `📅 Appointment booked!\nDate: ${appointmentDate}\nSlot: ${slot}\nToken: ${nextToken}`
+      );
+    }
+
+    return res.status(201).json({
+      message: "Appointment booked successfully",
+      token: nextToken,
+      slot,
+    });
+  } catch (err) {
+    await connection.rollback();
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  } finally {
+    connection.release();
+  }
+};
+
+// PATIENT getClinicAppointments
 
 exports.getClinicAppointments = async (req, res) => {
   const patientId = req.user.id;
@@ -645,7 +631,7 @@ exports.getClinicAppointments = async (req, res) => {
 
 // PATIENT cancelClinicAppointment
 
-exports.cancelClinicAppointment = async (req, res) => {
+exports.cancelAppointment = async (req, res) => {
   const patientId = req.user.id;
   const appointmentId = req.params.id;
 
@@ -655,18 +641,52 @@ exports.cancelClinicAppointment = async (req, res) => {
        SET status = 'CANCELLED'
        WHERE id = ?
        AND patient_id = ?
-       AND appointment_type = 'CLINIC'
-       AND status IN ('PENDING','ACCEPTED')`,
+       AND appointment_type IN ('CLINIC','HOSPITAL')
+       AND status IN ('PENDING','ACCEPTED')
+       AND appointment_date > CURDATE()`,
       [appointmentId, patientId]
     );
 
     if (result.affectedRows === 0) {
-      return res.status(400).json({ message: "Cannot cancel appointment" });
+      return res.status(400).json({
+        message: "Cannot cancel appointment (already started or invalid)",
+      });
     }
 
-    res.status(200).json({ message: "Clinic appointment cancelled" });
+    const [[patient]] = await db.query(
+      `SELECT email, mobile FROM users WHERE id = ?`,
+      [patientId]
+    );
+
+    await sendEmail(
+      patient.email,
+      "Appointment Cancelled",
+      "Your appointment has been cancelled successfully."
+    );
+
+    if (patient.mobile) {
+      await sendWhatsApp(
+        patient.mobile,
+        "❌ Your appointment has been cancelled successfully."
+      );
+    }
+
+    await createNotification({
+      receiverId: patientId,
+      receiverRole: "PATIENT",
+      title: "Appointment Cancelled",
+      message: "Your appointment has been cancelled successfully.",
+      appointmentId,
+    });
+
+    return res.status(200).json({
+      message: "Appointment cancelled successfully",
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
   }
 };
 
@@ -683,6 +703,7 @@ exports.getVisitAppointmentHistory = async (req, res) => {
         d.specialization,
         a.appointment_type,
         a.appointment_date,
+        a.appointment_slot,
         a.token_number,
         a.status,
         a.created_by
@@ -690,7 +711,8 @@ exports.getVisitAppointmentHistory = async (req, res) => {
        JOIN doctors d ON a.doctor_id = d.user_id
        WHERE a.patient_id = ?
        AND a.appointment_type IN ('CLINIC','HOSPITAL')
-       ORDER BY a.appointment_date DESC, a.token_number`,
+       AND a.status IN ('COMPLETED','CANCELLED','REJECTED')
+       ORDER BY a.appointment_date DESC, a.appointment_slot, a.token_number`,
       [patientId]
     );
 
@@ -700,93 +722,15 @@ exports.getVisitAppointmentHistory = async (req, res) => {
   }
 };
 
-// PATIENT qrBookVisit
-
-exports.qrBookVisit = async (req, res) => {
-  const patientId = req.user.id;
-  const { doctorId, appointmentType } = req.body;
-
-  try {
-    const [[maxToken]] = await db.query(
-      `SELECT MAX(token_number) AS token
-       FROM appointments
-       WHERE doctor_id = ?
-       AND appointment_date = CURDATE()
-       AND appointment_type = ?`,
-      [doctorId, appointmentType]
-    );
-
-    const nextToken = (maxToken.token || 0) + 1;
-
-    await db.query(
-      `INSERT INTO appointments
-       (appointment_type, patient_id, doctor_id,
-        appointment_date, token_number, status, created_by)
-       VALUES (?, ?, ?, CURDATE(), ?, 'PENDING', 'QR')`,
-      [appointmentType, patientId, doctorId, nextToken]
-    );
-
-    return res.status(201).json({
-      message: "QR appointment booked",
-      token: nextToken,
-    });
-  } catch (err) {
-    return res.status(500).json({ message: "Server error" });
-  }
-};
-
-exports.getTokenStatus = async (req, res) => {
-  const patientId = req.user.id;
-  const { appointmentId } = req.params;
-
-  try {
-    // Patient appointment
-    const [[appointment]] = await db.query(
-      `SELECT doctor_id, appointment_date, appointment_type, token_number
-       FROM appointments
-       WHERE id = ?
-       AND patient_id = ?
-       AND appointment_type IN ('CLINIC','HOSPITAL')`,
-      [appointmentId, patientId]
-    );
-
-    if (!appointment) {
-      return res.status(404).json({ message: "Appointment not found" });
-    }
-
-    // Current serving token (lowest ACCEPTED/IN_PROGRESS)
-    const [[current]] = await db.query(
-      `SELECT MIN(token_number) AS currentToken
-       FROM appointments
-       WHERE doctor_id = ?
-       AND appointment_date = ?
-       AND appointment_type = ?
-       AND status IN ('ACCEPTED','IN_PROGRESS')`,
-      [
-        appointment.doctor_id,
-        appointment.appointment_date,
-        appointment.appointment_type,
-      ]
-    );
-
-    return res.json({
-      yourToken: appointment.token_number,
-      nowServing: current.currentToken || null,
-    });
-  } catch (err) {
-    res.status(500).json({ message: "Server error" });
-  }
-};
-
 exports.getUpcomingAppointments = async (req, res) => {
   const patientId = req.user.id;
   const filter = req.query.filter;
 
   let dateCondition = "a.appointment_date >= CURDATE()";
+
   if (filter === "today") {
     dateCondition = "a.appointment_date = CURDATE()";
-  }
-  if (filter === "next7") {
+  } else if (filter === "next7") {
     dateCondition =
       "a.appointment_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)";
   }
@@ -798,7 +742,7 @@ exports.getUpcomingAppointments = async (req, res) => {
         d.doctorName,
         a.appointment_type,
         a.appointment_date,
-        a.appointment_time,
+        a.appointment_slot,
         a.token_number,
         a.status
        FROM appointments a
@@ -806,7 +750,7 @@ exports.getUpcomingAppointments = async (req, res) => {
        WHERE a.patient_id = ?
        AND ${dateCondition}
        AND a.status IN ('PENDING','ACCEPTED')
-       ORDER BY a.appointment_date, a.token_number`,
+       ORDER BY a.appointment_date, a.appointment_slot, a.token_number`,
       [patientId]
     );
 
@@ -816,91 +760,188 @@ exports.getUpcomingAppointments = async (req, res) => {
   }
 };
 
-exports.getPatientNotifications = async (req, res) => {
+// PATIENT qrBookVisit
+
+exports.qrBookVisit = async (req, res) => {
   const patientId = req.user.id;
+  const { doctorId, appointmentType, bookingFor, familyMemberId } = req.body;
+
+  if (!doctorId || !appointmentType) {
+    return res.status(400).json({ message: "Missing required fields" });
+  }
+
+  if (!["CLINIC", "HOSPITAL"].includes(appointmentType)) {
+    return res.status(400).json({ message: "Invalid appointment type" });
+  }
+
+  const appointmentDate = new Date().toISOString().slice(0, 10);
+
+  const hour = new Date().getHours();
+  let slot = "EVENING";
+  if (hour >= 6 && hour < 12) slot = "MORNING";
+  else if (hour >= 12 && hour < 17) slot = "AFTERNOON";
+
+  const connection = await db.getConnection();
 
   try {
-    const [notifications] = await db.query(
-      `SELECT id, title, message, appointment_id, is_read, created_at
-       FROM notifications
-       WHERE receiver_id = ?
-       AND receiver_role = 'PATIENT'
-       ORDER BY created_at DESC`,
-      [patientId]
+    await connection.beginTransaction();
+
+    // 1️⃣ Doctor check
+    const [[doctor]] = await connection.query(
+      `SELECT user_id
+       FROM doctors
+       WHERE user_id = ?
+       AND status = 'APPROVED'
+       AND is_available = TRUE
+       FOR UPDATE`,
+      [doctorId]
     );
 
-    res.json({ notifications });
+    if (!doctor) {
+      await connection.rollback();
+      return res.status(400).json({
+        message: "Doctor is not available for booking",
+      });
+    }
+
+    // 2️⃣ Duplicate QR booking check
+    const [[existing]] = await connection.query(
+      `SELECT id
+       FROM appointments
+       WHERE patient_id = ?
+       AND doctor_id = ?
+       AND appointment_date = ?
+       AND appointment_slot = ?
+       AND status IN ('PENDING','ACCEPTED','IN_PROGRESS')
+       FOR UPDATE`,
+      [patientId, doctorId, appointmentDate, slot]
+    );
+
+    if (existing) {
+      await connection.rollback();
+      return res.status(400).json({
+        message: "You already have a token for this slot",
+      });
+    }
+
+    // 3️⃣ Token generation (LOCKED)
+    const [[row]] = await connection.query(
+      `SELECT MAX(token_number) AS lastToken
+       FROM appointments
+       WHERE doctor_id = ?
+       AND appointment_date = ?
+       AND appointment_type = ?
+       AND appointment_slot = ?
+       FOR UPDATE`,
+      [doctorId, appointmentDate, appointmentType, slot]
+    );
+
+    const nextToken = (row.lastToken || 0) + 1;
+
+    await connection.query(
+      `INSERT INTO appointments
+       (appointment_type, patient_id, family_member_id, doctor_id,
+        appointment_date, appointment_slot, token_number,
+        status, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 'QR')`,
+      [
+        appointmentType,
+        patientId,
+        bookingFor === "FAMILY_MEMBER" ? familyMemberId : null,
+        doctorId,
+        appointmentDate,
+        slot,
+        nextToken,
+      ]
+    );
+
+    await connection.commit();
+
+    return res.status(201).json({
+      message: "QR appointment booked successfully",
+      token: nextToken,
+      slot,
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    await connection.rollback();
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  } finally {
+    connection.release();
   }
 };
 
-exports.markNotificationRead = async (req, res) => {
+exports.getTokenStatus = async (req, res) => {
   const patientId = req.user.id;
-  const { id } = req.params;
-
-  await db.query(
-    `UPDATE notifications
-     SET is_read = TRUE
-     WHERE id = ? AND receiver_id = ?`,
-    [id, patientId]
-  );
-
-  res.json({ message: "Notification marked as read" });
-};
-
-exports.getAppointmentDetail = async (req, res) => {
-  const patientId = req.user.id;
-  const { id } = req.params;
+  const { appointmentId } = req.params;
 
   try {
+    // 1️⃣ Validate appointment
     const [[appointment]] = await db.query(
-      `SELECT
+      `SELECT 
         a.id,
-        d.doctorName,
-        d.specialization,
-        a.appointment_type,
-        a.appointment_date,
-        a.appointment_time,
+        a.doctor_id,
         a.token_number,
-        a.status,
-        a.created_by
+        a.appointment_date,
+        d.avg_consultation_time
        FROM appointments a
-       JOIN doctors d ON a.doctor_id = d.user_id
-       WHERE a.id = ? AND a.patient_id = ?`,
-      [id, patientId]
+       JOIN doctors d ON d.user_id = a.doctor_id
+       WHERE a.id = ?
+       AND a.patient_id = ?
+       AND a.appointment_date = CURDATE()`,
+      [appointmentId, patientId]
     );
 
     if (!appointment) {
       return res.status(404).json({ message: "Appointment not found" });
     }
 
-    res.json(appointment);
-  } catch (err) {
-    res.status(500).json({ message: "Server error" });
-  }
-};
-
-exports.hardCancelAppointment = async (req, res) => {
-  const patientId = req.user.id;
-  const { id } = req.params;
-
-  try {
-    const [result] = await db.query(
-      `UPDATE appointments
-       SET status = 'CANCELLED'
-       WHERE id = ?
-       AND patient_id = ?`,
-      [id, patientId]
+    // 2️⃣ Check current IN_PROGRESS token
+    const [[inProgress]] = await db.query(
+      `SELECT token_number
+       FROM appointments
+       WHERE doctor_id = ?
+       AND appointment_date = CURDATE()
+       AND status = 'IN_PROGRESS'
+       ORDER BY token_number
+       LIMIT 1`,
+      [appointment.doctor_id]
     );
 
-    if (result.affectedRows === 0) {
-      return res.status(400).json({ message: "Cannot cancel appointment" });
+    let nowServing;
+
+    if (inProgress) {
+      nowServing = inProgress.token_number;
+    } else {
+      // fallback to first ACCEPTED
+      const [[accepted]] = await db.query(
+        `SELECT MIN(token_number) AS token
+         FROM appointments
+         WHERE doctor_id = ?
+         AND appointment_date = CURDATE()
+         AND status = 'ACCEPTED'`,
+        [appointment.doctor_id]
+      );
+
+      nowServing = accepted.token || appointment.token_number;
     }
 
-    res.json({ message: "Appointment cancelled successfully" });
+    const estimatedWaitMinutes =
+      Math.max(appointment.token_number - nowServing, 0) *
+      appointment.avg_consultation_time;
+
+    return res.json({
+      yourToken: appointment.token_number,
+      nowServing,
+      estimatedWaitMinutes,
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
   }
 };
 
@@ -915,11 +956,40 @@ exports.addFamilyMember = async (req, res) => {
     });
   }
 
+  if (!ALLOWED_RELATIONS.includes(relation)) {
+    return res.status(400).json({ message: "Invalid relation type" });
+  }
+
+  if (dob && isFutureDate(dob)) {
+    return res.status(400).json({ message: "DOB cannot be in the future" });
+  }
+
+  if (heightCm && isNaN(heightCm)) {
+    return res.status(400).json({ message: "Invalid height value" });
+  }
+
+  if (weightKg && isNaN(weightKg)) {
+    return res.status(400).json({ message: "Invalid weight value" });
+  }
+
   try {
+    // 🚫 Duplicate check
+    const [[exists]] = await db.query(
+      `SELECT id FROM family_members
+       WHERE patient_id = ? AND full_name = ? AND relation = ?`,
+      [patientId, fullName, relation]
+    );
+
+    if (exists) {
+      return res.status(409).json({
+        message: "Family member already exists",
+      });
+    }
+
     await db.query(
       `INSERT INTO family_members
-      (patient_id, full_name, gender, dob, blood_group, height_cm, weight_kg, relation)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (patient_id, full_name, gender, dob, blood_group, height_cm, weight_kg, relation)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         patientId,
         fullName,
@@ -932,11 +1002,11 @@ exports.addFamilyMember = async (req, res) => {
       ]
     );
 
-    res.status(201).json({
+    return res.status(201).json({
       message: "Family member added successfully",
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       message: "Server error",
       error: err.message,
     });
@@ -965,9 +1035,9 @@ exports.getFamilyMembers = async (req, res) => {
       [patientId]
     );
 
-    res.json({ members });
+    return res.json({ members });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       message: "Server error",
       error: err.message,
     });
@@ -988,27 +1058,45 @@ exports.updateFamilyMember = async (req, res) => {
     fields.push("full_name = ?");
     values.push(fullName);
   }
+
   if (gender) {
     fields.push("gender = ?");
     values.push(gender);
   }
+
   if (dob) {
+    if (isFutureDate(dob)) {
+      return res.status(400).json({ message: "DOB cannot be in the future" });
+    }
     fields.push("dob = ?");
     values.push(dob);
   }
+
   if (bloodGroup) {
     fields.push("blood_group = ?");
     values.push(bloodGroup);
   }
+
   if (heightCm) {
+    if (isNaN(heightCm)) {
+      return res.status(400).json({ message: "Invalid height value" });
+    }
     fields.push("height_cm = ?");
     values.push(heightCm);
   }
+
   if (weightKg) {
+    if (isNaN(weightKg)) {
+      return res.status(400).json({ message: "Invalid weight value" });
+    }
     fields.push("weight_kg = ?");
     values.push(weightKg);
   }
+
   if (relation) {
+    if (!ALLOWED_RELATIONS.includes(relation)) {
+      return res.status(400).json({ message: "Invalid relation type" });
+    }
     fields.push("relation = ?");
     values.push(relation);
   }
@@ -1035,11 +1123,11 @@ exports.updateFamilyMember = async (req, res) => {
       });
     }
 
-    res.json({
+    return res.json({
       message: "Family member updated successfully",
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       message: "Server error",
       error: err.message,
     });
@@ -1063,48 +1151,148 @@ exports.deleteFamilyMember = async (req, res) => {
       });
     }
 
-    res.json({
+    return res.json({
       message: "Family member deleted successfully",
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       message: "Server error",
       error: err.message,
     });
   }
 };
 
-exports.getIncomingAppointments = async (req, res) => {
-  const doctorId = req.user.id;
+// End Family Members
+
+// Patient Notification
+
+exports.getPatientNotifications = async (req, res) => {
+  const patientId = req.user.id;
 
   try {
-    const [appointments] = await db.query(
-      `SELECT
-        a.id,
-        a.appointment_type,
-        a.appointment_date,
-        a.appointment_time,
-        a.token_number,
-        a.status,
-        a.created_by,
-
-        -- Patient info
-        u.loginId AS patientEmail,
-
-        -- Family member info
-        fm.full_name AS familyMemberName
-
-       FROM appointments a
-       LEFT JOIN users u ON a.patient_id = u.id
-       LEFT JOIN family_members fm ON a.family_member_id = fm.id
-       WHERE a.doctor_id = ?
-       AND a.status = 'PENDING'
-       ORDER BY a.appointment_date, a.token_number`,
-      [doctorId]
+    const [notifications] = await db.query(
+      `SELECT id, title, message, appointment_id, is_read, created_at
+       FROM notifications
+       WHERE receiver_id = ?
+       AND receiver_role = 'PATIENT'
+       ORDER BY created_at DESC`,
+      [patientId]
     );
 
-    res.json({ appointments });
+    res.json({ notifications });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.markNotificationRead = async (req, res) => {
+  const patientId = req.user.id;
+  const { id } = req.params;
+
+  try {
+    const [result] = await db.query(
+      `UPDATE notifications
+       SET is_read = TRUE
+       WHERE id = ?
+       AND receiver_id = ?
+       AND receiver_role = 'PATIENT'
+       AND is_read = FALSE`,
+      [id, patientId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        message: "Notification not found or already read",
+      });
+    }
+
+    res.json({ message: "Notification marked as read" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.getUnreadNotificationCount = async (req, res) => {
+  const patientId = req.user.id;
+
+  const [[row]] = await db.query(
+    `SELECT COUNT(*) AS count
+     FROM notifications
+     WHERE receiver_id = ?
+     AND receiver_role = 'PATIENT'
+     AND is_read = FALSE`,
+    [patientId]
+  );
+
+  res.json({ unreadCount: row.count });
+};
+
+// Patient submitDoctorFeedback
+
+exports.submitDoctorReview = async (req, res) => {
+  const patientId = req.user.id;
+  const { appointmentId, doctorId, rating, comment } = req.body;
+
+  if (rating < 1 || rating > 5) {
+    return res.status(400).json({ message: "Rating must be 1 to 5" });
+  }
+
+  try {
+    // 1️⃣ Save feedback
+    await db.query(
+      `INSERT INTO doctor_feedback
+       (appointment_id, doctor_id, patient_id, rating, comment)
+       VALUES (?, ?, ?, ?, ?)`,
+      [appointmentId, doctorId, patientId, rating, comment]
+    );
+
+    // 2️⃣ Update doctor rating
+    await db.query(
+      `UPDATE doctors
+       SET rating =
+         ((rating * rating_count) + ?) / (rating_count + 1),
+           rating_count = rating_count + 1
+       WHERE user_id = ?`,
+      [rating, doctorId]
+    );
+
+    res.json({ message: "Feedback submitted successfully" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Patient getVisitSummary
+
+exports.getVisitSummary = async (req, res) => {
+  const patientId = req.user.id;
+  const { id } = req.params; // appointmentId
+
+  try {
+    const [[summary]] = await db.query(
+      `SELECT
+         vs.notes,
+         vs.prescription,
+         vs.follow_up_date,
+         a.appointment_date,
+         d.doctorName,
+         d.specialization
+       FROM visit_summaries vs
+       JOIN appointments a ON a.id = vs.appointment_id
+       JOIN doctors d ON d.user_id = a.doctor_id
+       WHERE vs.appointment_id = ?
+       AND a.patient_id = ?`,
+      [id, patientId]
+    );
+
+    if (!summary) {
+      return res.status(404).json({
+        message: "Visit summary not available",
+      });
+    }
+
+    res.json(summary);
+  } catch (err) {
+    res.status(500).json({ message: "Server error", error: err.message });
   }
 };
