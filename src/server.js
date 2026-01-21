@@ -1,6 +1,5 @@
 // server.js
 const app = require("./app");
-require("../cron/reminderJob");
 
 const PORT = process.env.PORT || 4000;
 

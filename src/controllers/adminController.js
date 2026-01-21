@@ -1,12 +1,14 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { DOCTOR_REJECTED } = require("../events/notification.events");
+const eventBus = require("../events/eventBus");
+const { DOCTOR_APPROVED } = require("../events/notification.events");
+const {
+  APPOINTMENT_CANCELLED_BY_ADMIN,
+} = require("../events/notification.events");
 
-// const { sendEmail, sendSMS } = require("../utils/notification");
 
-// const { sendSMS } = require("../utils/sms");
-// const { sendEmail } = require("../utils/email");
-// const { logNotification } = require("../utils/notificationLogger");
 
 // GET /admin/dashboard
 // GET  /admin/doctors?status=PENDING
@@ -17,17 +19,17 @@ exports.getDashboard = async (req, res) => {
   const [[doctors]] = await db.query(
     `SELECT COUNT(*) total,
             SUM(status='PENDING') pending
-     FROM doctors`
+     FROM doctors`,
   );
 
   const [[patients]] = await db.query(
     `SELECT COUNT(*) total
-     FROM users WHERE role='PATIENT'`
+     FROM users WHERE role='PATIENT'`,
   );
 
   const [[appointments]] = await db.query(
     `SELECT COUNT(*) total
-     FROM appointments WHERE appointment_date = CURDATE()`
+     FROM appointments WHERE appointment_date = CURDATE()`,
   );
 
   res.json({
@@ -121,11 +123,10 @@ exports.approveDoctor = async (req, res) => {
 
   try {
     const [[doctor]] = await db.query(
-      `SELECT d.status, d.doctorName, u.email, u.mobile
+      `SELECT d.status, d.doctorName
        FROM doctors d
-       JOIN users u ON u.id = d.user_id
        WHERE d.user_id = ?`,
-      [userId]
+      [userId],
     );
 
     if (!doctor) {
@@ -140,24 +141,16 @@ exports.approveDoctor = async (req, res) => {
       userId,
     ]);
 
-    // 🔔 NOTIFICATION
-    const emailMsg = `Hello Dr. ${doctor.doctorName},
+    // 🔥 EVENT EMIT
+    eventBus.emit(DOCTOR_APPROVED, {
+      eventType: DOCTOR_APPROVED,
+      doctor: {
+        id: userId,
+        name: doctor.doctorName,
+      },
+    });
 
-🎉 Congratulations!
-Your profile has been APPROVED by admin.
-
-You can now login and start accepting patients.
-
-Regards,
-YoDoctor Team`;
-
-    const smsMsg =
-      "🎉 YoDoctor: Your profile has been APPROVED. You can now login and start accepting patients.";
-
-    await sendEmail(doctor.email, "Doctor Profile Approved", emailMsg);
-    await sendSMS(doctor.mobile, smsMsg);
-
-    return res.json({ message: "Doctor approved & notified" });
+    return res.json({ message: "Doctor approved successfully" });
   } catch (err) {
     return res.status(500).json({
       message: "Server error",
@@ -171,11 +164,10 @@ exports.rejectDoctor = async (req, res) => {
 
   try {
     const [[doctor]] = await db.query(
-      `SELECT d.status, d.doctorName, u.email, u.mobile
+      `SELECT d.status, d.doctorName
        FROM doctors d
-       JOIN users u ON u.id = d.user_id
        WHERE d.user_id = ?`,
-      [userId]
+      [userId],
     );
 
     if (!doctor) {
@@ -190,24 +182,16 @@ exports.rejectDoctor = async (req, res) => {
       userId,
     ]);
 
-    // 🔔 NOTIFICATION
-    const emailMsg = `Hello Dr. ${doctor.doctorName},
+    // 🔥 EVENT EMIT
+    eventBus.emit(DOCTOR_REJECTED, {
+      eventType: DOCTOR_REJECTED,
+      doctor: {
+        id: userId,
+        name: doctor.doctorName,
+      },
+    });
 
-❌ We are sorry.
-Your profile has been REJECTED after review.
-
-For more details, please contact support.
-
-Regards,
-YoDoctor Team`;
-
-    const smsMsg =
-      "❌ YoDoctor: Sorry, your profile was REJECTED. Please contact support for details.";
-
-    await sendEmail(doctor.email, "Doctor Profile Rejected", emailMsg);
-    await sendSMS(doctor.mobile, smsMsg);
-
-    return res.json({ message: "Doctor rejected & notified" });
+    return res.json({ message: "Doctor rejected successfully" });
   } catch (err) {
     return res.status(500).json({
       message: "Server error",
@@ -251,7 +235,7 @@ YoDoctor Team`;
 
 exports.getPatients = async (req, res) => {
   const [patients] = await db.query(
-    `SELECT id, loginId, is_active FROM users WHERE role='PATIENT'`
+    `SELECT id, loginId, is_active FROM users WHERE role='PATIENT'`,
   );
   res.json({ patients });
 };
@@ -325,16 +309,25 @@ exports.getAllAppointments = async (req, res) => {
 // PUT /admin/appointments/:id/cancel
 
 exports.forceCancelAppointment = async (req, res) => {
+  const appointmentId = req.params.id;
+
   const [result] = await db.query(
-    `UPDATE appointments 
-     SET status='CANCELLED' 
-     WHERE id=? AND status NOT IN ('COMPLETED','CANCELLED')`,
-    [req.params.id]
+    `UPDATE appointments
+     SET status = 'CANCELLED'
+     WHERE id = ?
+     AND status NOT IN ('COMPLETED','CANCELLED')`,
+    [appointmentId],
   );
 
   if (result.affectedRows === 0) {
     return res.status(400).json({ message: "Cannot cancel appointment" });
   }
+
+  // 🔥 EVENT EMIT
+  eventBus.emit(APPOINTMENT_CANCELLED_BY_ADMIN, {
+    eventType: APPOINTMENT_CANCELLED_BY_ADMIN,
+    appointmentId,
+  });
 
   res.json({ message: "Appointment cancelled by admin" });
 };
@@ -363,7 +356,7 @@ exports.hardCancelAppointment = async (req, res) => {
        SET status = 'CANCELLED'
        WHERE id = ?
        AND patient_id = ?`,
-      [id, patientId]
+      [id, patientId],
     );
 
     if (result.affectedRows === 0) {

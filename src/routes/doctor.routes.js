@@ -1,14 +1,14 @@
 const express = require("express");
 const router = express.Router();
 const doctorController = require("../controllers/doctorController");
-const authController = require("../controllers/authController");
+// const authController = require("../controllers/authController");
 const { verifyToken } = require("../middleware/auth");
 const { allowRoles } = require("../middleware/roles");
 const { requireActiveUser } = require("../middleware/activeUser");
 
 // Auth
 router.post("/register", doctorController.register);
-router.post("/login", authController.login);
+// router.post("/login", authController.login);
 
 // Dashboard
 router.get(
@@ -129,10 +129,20 @@ router.post(
   doctorController.addVisitSummary
 );
 
-// router.put(
-//   "/appointments/:id/hard-cancel",
-//   verifyToken,
-//   doctorController.hardCancelAppointment
-// );
+router.get(
+  "/my-qr",
+  verifyToken,
+  allowRoles("DOCTOR"),
+  doctorController.getMyQR
+);
+
+router.post(
+  "/manualbooking",
+  verifyToken,
+  allowRoles("DOCTOR"),
+  doctorController.manualVisitBooking
+);
+
+
 
 module.exports = router;

@@ -1,8 +1,7 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
-const { sendEmail } = require("../../utils/email");
-const { sendWhatsApp } = require("../../utils/whatsapp");
-const { createNotification } = require("../../utils/patientNotification");
+const eventBus = require("../events/eventBus");
+const { APPOINTMENT_REQUESTED } = require("../events/notification.events");
 
 // Add Family Members helpers
 const ALLOWED_RELATIONS = [
@@ -68,7 +67,7 @@ exports.register = async (req, res) => {
     // ✅ Check existing user (EMAIL OR MOBILE)
     const [existingUser] = await connection.query(
       `SELECT id FROM users WHERE email = ? OR mobile = ?`,
-      [email, phone]
+      [email, phone],
     );
 
     if (existingUser.length > 0) {
@@ -83,14 +82,14 @@ exports.register = async (req, res) => {
     const [userResult] = await connection.query(
       `INSERT INTO users (email, mobile, password, role)
        VALUES (?, ?, ?, 'PATIENT')`,
-      [email, phone, hashedPassword]
+      [email, phone, hashedPassword],
     );
 
     // ✅ INSERT INTO PATIENTS
     await connection.query(
       `INSERT INTO patients (user_id, fullName, phone, gender, dob, email)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [userResult.insertId, fullName, phone, gender, dob, email]
+      [userResult.insertId, fullName, phone, gender, dob, email],
     );
 
     await connection.commit();
@@ -125,7 +124,7 @@ exports.getProfile = async (req, res) => {
        FROM patients p
        JOIN users u ON p.user_id = u.id
        WHERE p.user_id = ?`,
-      [userId]
+      [userId],
     );
 
     if (rows.length === 0) {
@@ -161,7 +160,7 @@ exports.updateProfile = async (req, res) => {
       // check duplicate mobile
       const [existing] = await db.query(
         `SELECT id FROM users WHERE mobile = ? AND id != ?`,
-        [phone, userId]
+        [phone, userId],
       );
 
       if (existing.length > 0) {
@@ -202,7 +201,7 @@ exports.updateProfile = async (req, res) => {
       `UPDATE patients 
        SET ${patientFields.join(", ")} 
        WHERE user_id = ?`,
-      patientValues
+      patientValues,
     );
 
     if (result.affectedRows === 0) {
@@ -288,7 +287,7 @@ exports.getDashboard = async (req, res) => {
        WHERE patient_id = ?
        AND appointment_date >= CURDATE()
        AND status IN ('PENDING','ACCEPTED')`,
-      [patientId]
+      [patientId],
     );
 
     // -------------------------------
@@ -306,7 +305,7 @@ exports.getDashboard = async (req, res) => {
        AND status IN ('PENDING','ACCEPTED')
        ORDER BY appointment_slot, token_number
        LIMIT 1`,
-      [patientId]
+      [patientId],
     );
 
     // -------------------------------
@@ -328,7 +327,7 @@ exports.getDashboard = async (req, res) => {
        AND a.appointment_date >= CURDATE()
        AND a.status IN ('PENDING','ACCEPTED')
        ORDER BY a.appointment_date ASC, a.appointment_slot, a.token_number`,
-      [patientId]
+      [patientId],
     );
 
     return res.status(200).json({
@@ -379,7 +378,7 @@ exports.searchVisitDoctors = async (req, res) => {
        )
        AND (? = '' OR d.city LIKE ?)
        ORDER BY d.rating DESC`,
-      [search, `%${search}%`, `%${search}%`, `%${search}%`, city, `%${city}%`]
+      [search, `%${search}%`, `%${search}%`, `%${search}%`, city, `%${city}%`],
     );
 
     res.status(200).json({
@@ -487,10 +486,9 @@ exports.bookVisitAppointment = async (req, res) => {
     bookingFor,
     familyMemberId,
     appointmentDate,
-    slot,
   } = req.body;
 
-  if (!doctorId || !appointmentType || !appointmentDate || !slot) {
+  if (!doctorId || !appointmentType || !appointmentDate) {
     return res.status(400).json({ message: "Missing required fields" });
   }
 
@@ -498,39 +496,60 @@ exports.bookVisitAppointment = async (req, res) => {
     return res.status(400).json({ message: "Invalid appointment type" });
   }
 
-  // Date validation (next 7 days)
+  // ✅ Date validation (NEXT 7 DAYS ONLY)
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   const selectedDate = new Date(appointmentDate);
   selectedDate.setHours(0, 0, 0, 0);
 
-  const diffDays = (selectedDate - today) / (1000 * 60 * 60 * 24);
-  if (diffDays < 0 || diffDays > 7) {
+  const diffDays = Math.floor((selectedDate - today) / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0 || diffDays >= 7) {
     return res.status(400).json({
-      message: "Appointment allowed only for next 7 days",
+      message: "You can book appointments only for the next 7 days",
     });
   }
 
+  // 🔥 SHIFT DETECTION (UNIFIED – SAME AS QR)
+  const hour = new Date().getHours();
+  let shift;
+
+  if (hour >= 6 && hour < 14) {
+    shift = "MORNING";
+  } else if (hour >= 14 && hour < 22) {
+    shift = "EVENING";
+  } else {
+    return res.status(400).json({
+      message: "Booking closed (night hours)",
+    });
+  }
+
+  const MAX_TOKENS_PER_SHIFT = 50;
   const connection = await db.getConnection();
 
   try {
     await connection.beginTransaction();
 
-    // 🔒 Token lock
+    // 🔒 SHARED TOKEN POOL (QR + NORMAL COMBINED)
     const [[row]] = await connection.query(
-      `SELECT MAX(token_number) AS lastToken
+      `SELECT COUNT(*) AS totalTokens,
+              MAX(token_number) AS lastToken
        FROM appointments
        WHERE doctor_id = ?
        AND appointment_date = ?
-       AND appointment_type = ?
        AND appointment_slot = ?
        FOR UPDATE`,
-      [doctorId, appointmentDate, appointmentType, slot]
+      [doctorId, appointmentDate, shift],
     );
+
+    if (row.totalTokens >= MAX_TOKENS_PER_SHIFT) {
+      throw new Error(`${shift} shift booking closed (50 tokens full)`);
+    }
 
     const nextToken = (row.lastToken || 0) + 1;
 
+    // 📝 INSERT APPOINTMENT
     const [insertResult] = await connection.query(
       `INSERT INTO appointments
        (appointment_type, patient_id, family_member_id, doctor_id,
@@ -543,9 +562,9 @@ exports.bookVisitAppointment = async (req, res) => {
         bookingFor === "FAMILY_MEMBER" ? familyMemberId : null,
         doctorId,
         appointmentDate,
-        slot,
+        shift,
         nextToken,
-      ]
+      ],
     );
 
     const appointmentId = insertResult.insertId;
@@ -556,42 +575,37 @@ exports.bookVisitAppointment = async (req, res) => {
        VALUES
        (?, 'DAY_BEFORE', DATE_SUB(?, INTERVAL 1 DAY)),
        (?, 'SAME_DAY', DATE_SUB(?, INTERVAL 2 HOUR))`,
-      [appointmentId, appointmentDate, appointmentId, appointmentDate]
+      [appointmentId, appointmentDate, appointmentId, appointmentDate],
     );
 
     await connection.commit();
 
-    // 🔔 PATIENT CONTACT
-    const [[patient]] = await db.query(
-      `SELECT email, mobile FROM users WHERE id = ?`,
-      [patientId]
-    );
-
-    // EMAIL
-    await sendEmail(
-      patient.email,
-      "Appointment Booked",
-      `Your appointment is booked.<br>
-       Date: ${appointmentDate}<br>
-       Slot: ${slot}<br>
-       Token: ${nextToken}`
-    );
-
-    // WHATSAPP
-    if (patient.mobile) {
-      await sendWhatsApp(
-        patient.mobile,
-        `📅 Appointment booked!\nDate: ${appointmentDate}\nSlot: ${slot}\nToken: ${nextToken}`
-      );
-    }
+    // 🔔 EVENT
+    eventBus.emit(APPOINTMENT_REQUESTED, {
+      eventType: APPOINTMENT_REQUESTED,
+      appointmentId,
+      appointmentTime: appointmentDate,
+      patient: { id: patientId },
+      doctor: { id: doctorId },
+      shift,
+      source: "NORMAL",
+    });
 
     return res.status(201).json({
       message: "Appointment booked successfully",
+      date: appointmentDate,
+      shift,
       token: nextToken,
-      slot,
     });
   } catch (err) {
     await connection.rollback();
+
+    if (err.message.includes("shift booking closed")) {
+      return res.status(409).json({
+        message: err.message,
+      });
+    }
+
     return res.status(500).json({
       message: "Server error",
       error: err.message,
@@ -620,7 +634,7 @@ exports.getClinicAppointments = async (req, res) => {
        WHERE a.patient_id = ?
        AND a.appointment_type = 'CLINIC'
        ORDER BY a.appointment_date DESC, a.token_number`,
-      [patientId]
+      [patientId],
     );
 
     res.status(200).json({ appointments });
@@ -644,7 +658,7 @@ exports.cancelAppointment = async (req, res) => {
        AND appointment_type IN ('CLINIC','HOSPITAL')
        AND status IN ('PENDING','ACCEPTED')
        AND appointment_date > CURDATE()`,
-      [appointmentId, patientId]
+      [appointmentId, patientId],
     );
 
     if (result.affectedRows === 0) {
@@ -653,30 +667,14 @@ exports.cancelAppointment = async (req, res) => {
       });
     }
 
-    const [[patient]] = await db.query(
-      `SELECT email, mobile FROM users WHERE id = ?`,
-      [patientId]
-    );
-
-    await sendEmail(
-      patient.email,
-      "Appointment Cancelled",
-      "Your appointment has been cancelled successfully."
-    );
-
-    if (patient.mobile) {
-      await sendWhatsApp(
-        patient.mobile,
-        "❌ Your appointment has been cancelled successfully."
-      );
-    }
-
-    await createNotification({
-      receiverId: patientId,
-      receiverRole: "PATIENT",
-      title: "Appointment Cancelled",
-      message: "Your appointment has been cancelled successfully.",
+    // 🔥 STEP 4.A — EVENT EMIT (AFTER SUCCESSFUL UPDATE)
+    eventBus.emit(APPOINTMENT_CANCELLED_BY_PATIENT, {
+      eventType: APPOINTMENT_CANCELLED_BY_PATIENT,
       appointmentId,
+      patient: {
+        id: patientId,
+      },
+      // doctorId handler me fetch / payload enhance STEP 4.B me hoga
     });
 
     return res.status(200).json({
@@ -713,7 +711,7 @@ exports.getVisitAppointmentHistory = async (req, res) => {
        AND a.appointment_type IN ('CLINIC','HOSPITAL')
        AND a.status IN ('COMPLETED','CANCELLED','REJECTED')
        ORDER BY a.appointment_date DESC, a.appointment_slot, a.token_number`,
-      [patientId]
+      [patientId],
     );
 
     return res.status(200).json({ appointments });
@@ -751,7 +749,7 @@ exports.getUpcomingAppointments = async (req, res) => {
        AND ${dateCondition}
        AND a.status IN ('PENDING','ACCEPTED')
        ORDER BY a.appointment_date, a.appointment_slot, a.token_number`,
-      [patientId]
+      [patientId],
     );
 
     res.json({ appointments });
@@ -776,17 +774,27 @@ exports.qrBookVisit = async (req, res) => {
 
   const appointmentDate = new Date().toISOString().slice(0, 10);
 
+  // 🔥 SHIFT DETECTION (UNIFIED)
   const hour = new Date().getHours();
-  let slot = "EVENING";
-  if (hour >= 6 && hour < 12) slot = "MORNING";
-  else if (hour >= 12 && hour < 17) slot = "AFTERNOON";
+  let shift;
 
+  if (hour >= 6 && hour < 14) {
+    shift = "MORNING";
+  } else if (hour >= 14 && hour < 22) {
+    shift = "EVENING";
+  } else {
+    return res.status(400).json({
+      message: "Booking closed (night hours)",
+    });
+  }
+
+  const MAX_TOKENS_PER_SHIFT = 50;
   const connection = await db.getConnection();
 
   try {
     await connection.beginTransaction();
 
-    // 1️⃣ Doctor check
+    // 1️⃣ Doctor availability (LOCK)
     const [[doctor]] = await connection.query(
       `SELECT user_id
        FROM doctors
@@ -794,7 +802,7 @@ exports.qrBookVisit = async (req, res) => {
        AND status = 'APPROVED'
        AND is_available = TRUE
        FOR UPDATE`,
-      [doctorId]
+      [doctorId],
     );
 
     if (!doctor) {
@@ -804,7 +812,7 @@ exports.qrBookVisit = async (req, res) => {
       });
     }
 
-    // 2️⃣ Duplicate QR booking check
+    // 2️⃣ Duplicate shift booking check (patient-wise)
     const [[existing]] = await connection.query(
       `SELECT id
        FROM appointments
@@ -814,31 +822,39 @@ exports.qrBookVisit = async (req, res) => {
        AND appointment_slot = ?
        AND status IN ('PENDING','ACCEPTED','IN_PROGRESS')
        FOR UPDATE`,
-      [patientId, doctorId, appointmentDate, slot]
+      [patientId, doctorId, appointmentDate, shift],
     );
 
     if (existing) {
       await connection.rollback();
       return res.status(400).json({
-        message: "You already have a token for this slot",
+        message: "You already have a token for this shift",
       });
     }
 
-    // 3️⃣ Token generation (LOCKED)
+    // 3️⃣ 🔒 SHARED TOKEN POOL (QR + NORMAL COMBINED)
     const [[row]] = await connection.query(
-      `SELECT MAX(token_number) AS lastToken
+      `SELECT COUNT(*) AS totalTokens,
+              MAX(token_number) AS lastToken
        FROM appointments
        WHERE doctor_id = ?
        AND appointment_date = ?
-       AND appointment_type = ?
        AND appointment_slot = ?
        FOR UPDATE`,
-      [doctorId, appointmentDate, appointmentType, slot]
+      [doctorId, appointmentDate, shift],
     );
+
+    if (row.totalTokens >= MAX_TOKENS_PER_SHIFT) {
+      await connection.rollback();
+      return res.status(409).json({
+        message: `${shift} shift booking closed (50 tokens full)`,
+      });
+    }
 
     const nextToken = (row.lastToken || 0) + 1;
 
-    await connection.query(
+    // 4️⃣ Insert appointment
+    const [insertResult] = await connection.query(
       `INSERT INTO appointments
        (appointment_type, patient_id, family_member_id, doctor_id,
         appointment_date, appointment_slot, token_number,
@@ -850,17 +866,29 @@ exports.qrBookVisit = async (req, res) => {
         bookingFor === "FAMILY_MEMBER" ? familyMemberId : null,
         doctorId,
         appointmentDate,
-        slot,
+        shift,
         nextToken,
-      ]
+      ],
     );
 
+    const appointmentId = insertResult.insertId;
+
     await connection.commit();
+
+    // 🔔 EVENT
+    eventBus.emit(APPOINTMENT_REQUESTED, {
+      eventType: APPOINTMENT_REQUESTED,
+      appointmentId,
+      patient: { id: patientId },
+      doctor: { id: doctorId },
+      shift,
+      source: "QR",
+    });
 
     return res.status(201).json({
       message: "QR appointment booked successfully",
       token: nextToken,
-      slot,
+      shift,
     });
   } catch (err) {
     await connection.rollback();
@@ -891,7 +919,7 @@ exports.getTokenStatus = async (req, res) => {
        WHERE a.id = ?
        AND a.patient_id = ?
        AND a.appointment_date = CURDATE()`,
-      [appointmentId, patientId]
+      [appointmentId, patientId],
     );
 
     if (!appointment) {
@@ -907,7 +935,7 @@ exports.getTokenStatus = async (req, res) => {
        AND status = 'IN_PROGRESS'
        ORDER BY token_number
        LIMIT 1`,
-      [appointment.doctor_id]
+      [appointment.doctor_id],
     );
 
     let nowServing;
@@ -922,7 +950,7 @@ exports.getTokenStatus = async (req, res) => {
          WHERE doctor_id = ?
          AND appointment_date = CURDATE()
          AND status = 'ACCEPTED'`,
-        [appointment.doctor_id]
+        [appointment.doctor_id],
       );
 
       nowServing = accepted.token || appointment.token_number;
@@ -977,7 +1005,7 @@ exports.addFamilyMember = async (req, res) => {
     const [[exists]] = await db.query(
       `SELECT id FROM family_members
        WHERE patient_id = ? AND full_name = ? AND relation = ?`,
-      [patientId, fullName, relation]
+      [patientId, fullName, relation],
     );
 
     if (exists) {
@@ -999,7 +1027,7 @@ exports.addFamilyMember = async (req, res) => {
         heightCm || null,
         weightKg || null,
         relation,
-      ]
+      ],
     );
 
     return res.status(201).json({
@@ -1032,7 +1060,7 @@ exports.getFamilyMembers = async (req, res) => {
       FROM family_members
       WHERE patient_id = ?
       ORDER BY created_at DESC`,
-      [patientId]
+      [patientId],
     );
 
     return res.json({ members });
@@ -1114,7 +1142,7 @@ exports.updateFamilyMember = async (req, res) => {
       `UPDATE family_members
        SET ${fields.join(", ")}
        WHERE id = ? AND patient_id = ?`,
-      values
+      values,
     );
 
     if (result.affectedRows === 0) {
@@ -1142,7 +1170,7 @@ exports.deleteFamilyMember = async (req, res) => {
     const [result] = await db.query(
       `DELETE FROM family_members
        WHERE id = ? AND patient_id = ?`,
-      [id, patientId]
+      [id, patientId],
     );
 
     if (result.affectedRows === 0) {
@@ -1176,7 +1204,7 @@ exports.getPatientNotifications = async (req, res) => {
        WHERE receiver_id = ?
        AND receiver_role = 'PATIENT'
        ORDER BY created_at DESC`,
-      [patientId]
+      [patientId],
     );
 
     res.json({ notifications });
@@ -1197,7 +1225,7 @@ exports.markNotificationRead = async (req, res) => {
        AND receiver_id = ?
        AND receiver_role = 'PATIENT'
        AND is_read = FALSE`,
-      [id, patientId]
+      [id, patientId],
     );
 
     if (result.affectedRows === 0) {
@@ -1221,7 +1249,7 @@ exports.getUnreadNotificationCount = async (req, res) => {
      WHERE receiver_id = ?
      AND receiver_role = 'PATIENT'
      AND is_read = FALSE`,
-    [patientId]
+    [patientId],
   );
 
   res.json({ unreadCount: row.count });
@@ -1243,7 +1271,7 @@ exports.submitDoctorReview = async (req, res) => {
       `INSERT INTO doctor_feedback
        (appointment_id, doctor_id, patient_id, rating, comment)
        VALUES (?, ?, ?, ?, ?)`,
-      [appointmentId, doctorId, patientId, rating, comment]
+      [appointmentId, doctorId, patientId, rating, comment],
     );
 
     // 2️⃣ Update doctor rating
@@ -1253,7 +1281,7 @@ exports.submitDoctorReview = async (req, res) => {
          ((rating * rating_count) + ?) / (rating_count + 1),
            rating_count = rating_count + 1
        WHERE user_id = ?`,
-      [rating, doctorId]
+      [rating, doctorId],
     );
 
     res.json({ message: "Feedback submitted successfully" });
@@ -1282,7 +1310,7 @@ exports.getVisitSummary = async (req, res) => {
        JOIN doctors d ON d.user_id = a.doctor_id
        WHERE vs.appointment_id = ?
        AND a.patient_id = ?`,
-      [id, patientId]
+      [id, patientId],
     );
 
     if (!summary) {

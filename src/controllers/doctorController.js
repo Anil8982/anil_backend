@@ -1,9 +1,5 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
-const createNotification = require("../../utils/patientNotification");
-const { sendEmail } = require("../../utils/email");
-const { sendWhatsApp } = require("../../utils/whatsapp");
-
 
 exports.register = async (req, res) => {
   const {
@@ -102,7 +98,7 @@ exports.register = async (req, res) => {
     // --------------------
     const [existingUser] = await connection.query(
       `SELECT id FROM users WHERE email = ? OR mobile = ?`,
-      [email, phone]
+      [email, phone],
     );
 
     if (existingUser.length > 0) {
@@ -115,7 +111,7 @@ exports.register = async (req, res) => {
     // --------------------
     const [[licenseCheck]] = await connection.query(
       "SELECT id FROM doctors WHERE licenseNumber = ?",
-      [licenseNumber]
+      [licenseNumber],
     );
 
     if (licenseCheck) {
@@ -136,7 +132,7 @@ exports.register = async (req, res) => {
     const [userResult] = await connection.query(
       `INSERT INTO users (email, mobile, password, role)
        VALUES (?, ?, ?, 'DOCTOR')`,
-      [email, phone, hashedPassword]
+      [email, phone, hashedPassword],
     );
 
     const userId = userResult.insertId;
@@ -168,7 +164,7 @@ exports.register = async (req, res) => {
         2.0,
         0,
         "PENDING",
-      ]
+      ],
     );
 
     await connection.commit();
@@ -191,7 +187,7 @@ exports.register = async (req, res) => {
 
 exports.respondAppointment = async (req, res) => {
   const doctorId = req.user.id;
-  const { id } = req.params;
+  const { id: appointmentId } = req.params;
   const { action } = req.body;
 
   // ✅ Validate action
@@ -199,19 +195,18 @@ exports.respondAppointment = async (req, res) => {
     return res.status(400).json({ message: "Invalid action" });
   }
 
-  // ✅ MUST match DB ENUM values exactly
-  const status = action === "ACCEPT" ? "Approved" : "Rejected";
+  // ⚠️ Use consistent DB status
+  const newStatus = action === "ACCEPT" ? "ACCEPTED" : "REJECTED";
 
   try {
-    // ✅ Fetch appointment + patient (ENUM uses 'Pending')
+    // ✅ Fetch appointment (ONLY required data)
     const [[appointment]] = await db.query(
-      `SELECT a.patient_id, u.email, u.mobile
-       FROM appointments a
-       JOIN users u ON u.id = a.patient_id
-       WHERE a.id = ?
-       AND a.doctor_id = ?
-       AND a.status = 'Pending'`,
-      [id, doctorId]
+      `SELECT patient_id
+       FROM appointments
+       WHERE id = ?
+       AND doctor_id = ?
+       AND status = 'PENDING'`,
+      [appointmentId, doctorId],
     );
 
     if (!appointment) {
@@ -225,36 +220,39 @@ exports.respondAppointment = async (req, res) => {
       `UPDATE appointments
        SET status = ?
        WHERE id = ?`,
-      [status, id]
+      [newStatus, appointmentId],
     );
 
-    // ✅ EMAIL (fixed field)
-    await sendEmail({
-      to: appointment.email,
-      subject: `Appointment ${status}`,
-      text: `Your appointment has been ${status.toLowerCase()}.`,
-    });
-
-    // ✅ WHATSAPP (fixed field)
-    if (appointment.mobile) {
-      await sendWhatsApp({
-        phone: appointment.mobile,
-        message: `Your appointment has been ${status.toLowerCase()}.`,
+    // 🔥 STEP 4.A — EVENT EMIT
+    if (action === "ACCEPT") {
+      eventBus.emit(APPOINTMENT_CONFIRMED, {
+        eventType: APPOINTMENT_CONFIRMED,
+        appointmentId,
+        patient: {
+          id: appointment.patient_id,
+        },
+        doctor: {
+          id: doctorId,
+        },
+      });
+    } else {
+      eventBus.emit(APPOINTMENT_REJECTED, {
+        eventType: APPOINTMENT_REJECTED,
+        appointmentId,
+        patient: {
+          id: appointment.patient_id,
+        },
+        doctor: {
+          id: doctorId,
+        },
       });
     }
 
-    // ✅ APP notification
-    await createNotification({
-      receiverId: appointment.patient_id,
-      receiverRole: "PATIENT",
-      title: `Appointment ${status}`,
-      message: `Your appointment has been ${status.toLowerCase()}.`,
-      appointmentId: id,
+    return res.json({
+      message: `Appointment ${newStatus.toLowerCase()}`,
     });
-
-    res.json({ message: `Appointment ${status}` });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       message: "Server error",
       error: err.message,
     });
@@ -314,7 +312,7 @@ exports.getDashboard = async (req, res) => {
       FROM appointments
       WHERE doctor_id = ?
       `,
-      [doctorId]
+      [doctorId],
     );
 
     res.json(row);
@@ -344,7 +342,7 @@ exports.getIncomingAppointments = async (req, res) => {
        WHERE a.doctor_id = ?
        AND a.status IN ('PENDING','ACCEPTED')
        ORDER BY a.appointment_date, a.appointment_slot, a.token_number`,
-      [doctorId]
+      [doctorId],
     );
 
     res.json({ appointments });
@@ -373,7 +371,7 @@ exports.getTodayQueue = async (req, res) => {
        AND a.appointment_slot = ?
        AND a.status IN ('ACCEPTED','IN_PROGRESS')
        ORDER BY a.token_number`,
-      [doctorId, slot]
+      [doctorId, slot],
     );
 
     res.json({ queue });
@@ -384,37 +382,42 @@ exports.getTodayQueue = async (req, res) => {
 
 exports.startAppointment = async (req, res) => {
   const doctorId = req.user.id;
-  const { id } = req.params;
+  const { id: appointmentId } = req.params;
 
   try {
-    // Ensure appointment exists & is valid for start
-    const [[appt]] = await db.query(
+    // ✅ Ensure appointment is valid to start
+    const [[appointment]] = await db.query(
       `SELECT id
        FROM appointments
        WHERE id = ?
        AND doctor_id = ?
        AND appointment_date = CURDATE()
        AND status = 'ACCEPTED'`,
-      [id, doctorId]
+      [appointmentId, doctorId],
     );
 
-    if (!appt) {
+    if (!appointment) {
       return res.status(400).json({
         message: "Appointment cannot be started",
       });
     }
 
-    // Start appointment
+    // ✅ Start appointment
     await db.query(
       `UPDATE appointments
        SET status = 'IN_PROGRESS'
        WHERE id = ?`,
-      [id]
+      [appointmentId],
     );
 
-    res.json({ message: "Appointment started" });
+    return res.json({
+      message: "Appointment started",
+    });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
   }
 };
 
@@ -430,7 +433,7 @@ exports.completeAppointment = async (req, res) => {
    WHERE a.id = ?
    AND a.doctor_id = ?
    AND a.status = 'IN_PROGRESS'`,
-      [id, doctorId]
+      [id, doctorId],
     );
 
     if (!appt) {
@@ -443,7 +446,7 @@ exports.completeAppointment = async (req, res) => {
       `UPDATE appointments
        SET status = 'COMPLETED'
        WHERE id = ?`,
-      [id]
+      [id],
     );
 
     // EMAIL summary notification
@@ -477,7 +480,7 @@ exports.getDoctorUnreadCount = async (req, res) => {
      WHERE receiver_id = ?
      AND receiver_role = 'DOCTOR'
      AND is_read = FALSE`,
-    [doctorId]
+    [doctorId],
   );
 
   res.json({ unreadCount: row.count });
@@ -492,7 +495,7 @@ exports.callNextToken = async (req, res) => {
   }
 
   try {
-    // 1️⃣ Complete current IN_PROGRESS (same slot)
+    // 1️⃣ Complete current IN_PROGRESS
     const [[current]] = await db.query(
       `SELECT id
        FROM appointments
@@ -500,7 +503,7 @@ exports.callNextToken = async (req, res) => {
        AND appointment_date = CURDATE()
        AND appointment_slot = ?
        AND status = 'IN_PROGRESS'`,
-      [doctorId, slot]
+      [doctorId, slot],
     );
 
     if (current) {
@@ -508,11 +511,11 @@ exports.callNextToken = async (req, res) => {
         `UPDATE appointments
          SET status = 'COMPLETED'
          WHERE id = ?`,
-        [current.id]
+        [current.id],
       );
     }
 
-    // 2️⃣ Get NEXT ACCEPTED token (same slot)
+    // 2️⃣ Get NEXT ACCEPTED
     const [[next]] = await db.query(
       `SELECT id, patient_id, token_number
        FROM appointments
@@ -522,7 +525,7 @@ exports.callNextToken = async (req, res) => {
        AND status = 'ACCEPTED'
        ORDER BY token_number ASC
        LIMIT 1`,
-      [doctorId, slot]
+      [doctorId, slot],
     );
 
     if (!next) {
@@ -534,21 +537,20 @@ exports.callNextToken = async (req, res) => {
       `UPDATE appointments
        SET status = 'IN_PROGRESS'
        WHERE id = ?`,
-      [next.id]
+      [next.id],
     );
 
-    // 🔔 Notify current patient (YOUR TURN)
-    await createNotification({
-      receiverId: next.patient_id,
-      receiverRole: "PATIENT",
-      title: "Your Turn Now",
-      message: `Token ${next.token_number} is now being served`,
+    // 🔥 EVENT — CURRENT PATIENT TURN
+    eventBus.emit(APPOINTMENT_REMINDER, {
+      eventType: APPOINTMENT_REMINDER,
       appointmentId: next.id,
+      patient: { id: next.patient_id },
+      meta: { type: "NOW", token: next.token_number },
     });
 
-    // 4️⃣ TOKEN-NEAR ALERT (next 2 AFTER current)
+    // 4️⃣ Near-turn patients (next 2)
     const [nearPatients] = await db.query(
-      `SELECT patient_id
+      `SELECT id, patient_id
        FROM appointments
        WHERE doctor_id = ?
        AND appointment_date = CURDATE()
@@ -557,26 +559,25 @@ exports.callNextToken = async (req, res) => {
        AND token_number > ?
        ORDER BY token_number ASC
        LIMIT 2`,
-      [doctorId, slot, next.token_number]
+      [doctorId, slot, next.token_number],
     );
 
     for (const p of nearPatients) {
-      await createNotification({
-        receiverId: p.patient_id,
-        receiverRole: "PATIENT",
-        title: "Your turn is near",
-        message: "Please reach clinic. Your appointment is coming soon.",
+      eventBus.emit(APPOINTMENT_REMINDER, {
+        eventType: APPOINTMENT_REMINDER,
+        appointmentId: p.id,
+        patient: { id: p.patient_id },
+        meta: { type: "NEAR" },
       });
     }
 
-    // 5️⃣ Final response
-    res.json({
+    return res.json({
       message: "Next token called",
       token: next.token_number,
       slot,
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       message: "Server error",
       error: err.message,
     });
@@ -605,7 +606,7 @@ exports.getDoctorProfile = async (req, res) => {
         status
        FROM doctors
        WHERE user_id = ?`,
-      [doctorId]
+      [doctorId],
     );
 
     if (!doctor) {
@@ -666,7 +667,7 @@ exports.updateDoctorProfile = async (req, res) => {
         availableDays ? JSON.stringify(availableDays) : null,
         experienceYears,
         doctorId,
-      ]
+      ],
     );
 
     if (result.affectedRows === 0) {
@@ -694,7 +695,7 @@ exports.updateAvailability = async (req, res) => {
       `UPDATE doctors
        SET is_available = ?
        WHERE user_id = ?`,
-      [isAvailable, doctorId]
+      [isAvailable, doctorId],
     );
 
     res.json({
@@ -769,7 +770,7 @@ exports.getDoctorReviews = async (req, res) => {
        JOIN users u ON r.patient_id = u.id
        WHERE r.doctor_id = ?
        ORDER BY r.created_at DESC`,
-      [doctorId]
+      [doctorId],
     );
 
     res.json({ reviews });
@@ -780,18 +781,18 @@ exports.getDoctorReviews = async (req, res) => {
 
 exports.addVisitSummary = async (req, res) => {
   const doctorId = req.user.id;
-  const { id } = req.params; // appointmentId
+  const { id: appointmentId } = req.params;
   const { notes, prescription, followUpAfterDays } = req.body;
 
   try {
     // 1️⃣ Validate appointment
     const [[appt]] = await db.query(
-      `SELECT patient_id, appointment_date
+      `SELECT patient_id
        FROM appointments
        WHERE id = ?
        AND doctor_id = ?
        AND status = 'COMPLETED'`,
-      [id, doctorId]
+      [appointmentId, doctorId],
     );
 
     if (!appt) {
@@ -812,34 +813,36 @@ exports.addVisitSummary = async (req, res) => {
       `INSERT INTO visit_summaries
        (appointment_id, notes, prescription, follow_up_date)
        VALUES (?, ?, ?, ?)`,
-      [id, notes || null, prescription || null, followUpDate]
+      [appointmentId, notes || null, prescription || null, followUpDate],
     );
 
-    // 4️⃣ Create FOLLOW-UP reminder (automation)
+    // 4️⃣ Follow-up reminder
     if (followUpDate) {
       await db.query(
         `INSERT INTO reminders
          (appointment_id, reminder_type, scheduled_at)
          VALUES (?, 'FOLLOW_UP', ?)`,
-        [id, followUpDate]
+        [appointmentId, followUpDate],
       );
     }
 
-    // 5️⃣ Notify patient (App)
-    await createNotification({
-      receiverId: appt.patient_id,
-      receiverRole: "PATIENT",
-      title: "Visit Summary Available",
-      message: "Doctor has added your visit summary",
-      appointmentId: id,
+    // 🔥 EVENT EMIT
+    eventBus.emit(VISIT_SUMMARY_ADDED, {
+      eventType: VISIT_SUMMARY_ADDED,
+      appointmentId,
+      patient: { id: appt.patient_id },
+      doctor: { id: doctorId },
     });
 
-    res.json({
+    return res.json({
       message: "Visit summary saved successfully",
       followUpDate,
     });
   } catch (err) {
-    res.status(500).json({ message: "Server error", error: err.message });
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
   }
 };
 
@@ -883,7 +886,7 @@ exports.getDoctorAppointmentHistory = async (req, res) => {
        AND ${dateCondition}
        AND a.status IN ('COMPLETED','CANCELLED','REJECTED')
        ORDER BY a.appointment_date DESC, a.token_number DESC`,
-      [doctorId]
+      [doctorId],
     );
 
     res.json({ appointments });
@@ -905,11 +908,155 @@ exports.getDoctorNotifications = async (req, res) => {
        WHERE receiver_id = ?
        AND receiver_role = 'DOCTOR'
        ORDER BY created_at DESC`,
-      [doctorId]
+      [doctorId],
     );
 
     res.json({ notifications });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+// DOCTOR – getMyQR
+
+exports.getMyQR = async (req, res) => {
+  const doctorId = req.user.id;
+
+  const [[doctor]] = await db.query(
+    `SELECT user_id FROM doctors WHERE user_id = ? AND status = 'APPROVED'`,
+    [doctorId],
+  );
+
+  if (!doctor) {
+    return res.status(403).json({
+      message: "Doctor not approved",
+    });
+  }
+
+  const qrUrl = `${process.env.FRONTEND_URL}/qr-book?doctorId=${doctorId}`;
+
+  res.json({
+    doctorId,
+    qrUrl,
+  });
+};
+
+// STAFF / NURSE – Manual (Walk-in) Visit Booking
+
+exports.manualVisitBooking = async (req, res) => {
+  const staffId = req.user.id;
+
+  const {
+    doctorId,
+    appointmentType, // metadata only
+    slot, // MORNING | EVENING
+    patientName,
+    patientMobile,
+    patientAge,
+  } = req.body;
+
+  if (
+    !doctorId ||
+    !patientName ||
+    !patientMobile ||
+    !["MORNING", "EVENING"].includes(slot)
+  ) {
+    return res.status(400).json({
+      message: "Invalid request data",
+    });
+  }
+
+  const appointmentDate = new Date().toISOString().slice(0, 10);
+  const MAX_TOKENS_PER_SHIFT = 50;
+
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    // 1️⃣ Doctor must be APPROVED & AVAILABLE (LOCK)
+    const [[doctor]] = await connection.query(
+      `SELECT user_id
+       FROM doctors
+       WHERE user_id = ?
+       AND status = 'APPROVED'
+       AND is_available = TRUE
+       FOR UPDATE`,
+      [doctorId],
+    );
+
+    if (!doctor) {
+      await connection.rollback();
+      return res.status(400).json({
+        message: "Doctor is not available for booking",
+      });
+    }
+
+    // 2️⃣ Insert walk-in patient (independent of token)
+    const [walkinResult] = await connection.query(
+      `INSERT INTO walkin_patients (name, mobile, age)
+       VALUES (?, ?, ?)`,
+      [patientName, patientMobile, patientAge || null],
+    );
+
+    const walkinPatientId = walkinResult.insertId;
+
+    // 3️⃣ 🔒 SHARED TOKEN POOL (QR + NORMAL + MANUAL)
+    const [[row]] = await connection.query(
+      `SELECT COUNT(*) AS totalTokens,
+              MAX(token_number) AS lastToken
+       FROM appointments
+       WHERE doctor_id = ?
+       AND appointment_date = ?
+       AND appointment_slot = ?
+       FOR UPDATE`,
+      [doctorId, appointmentDate, slot],
+    );
+
+    if (row.totalTokens >= MAX_TOKENS_PER_SHIFT) {
+      await connection.rollback();
+      return res.status(409).json({
+        message: `${slot} shift booking closed (50 tokens full)`,
+      });
+    }
+
+    const nextToken = (row.lastToken || 0) + 1;
+
+    // 4️⃣ Insert appointment (TOKEN FINAL)
+    const [appointmentResult] = await connection.query(
+      `INSERT INTO appointments
+       (appointment_type, doctor_id, patient_id, walkin_patient_id,
+        appointment_date, appointment_slot,
+        token_number, status, created_by)
+       VALUES (?, ?, NULL, ?, ?, ?, ?, 'PENDING', 'STAFF')`,
+      [
+        appointmentType || "CLINIC",
+        doctorId,
+        walkinPatientId,
+        appointmentDate,
+        slot,
+        nextToken,
+      ],
+    );
+
+    const appointmentId = appointmentResult.insertId;
+
+    await connection.commit();
+
+    return res.status(201).json({
+      message: "Manual appointment booked successfully",
+      token: nextToken,
+      slot,
+      appointmentId,
+      walkinPatientId,
+    });
+  } catch (err) {
+    await connection.rollback();
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  } finally {
+    connection.release();
   }
 };

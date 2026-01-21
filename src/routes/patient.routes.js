@@ -2,14 +2,14 @@ const express = require("express");
 const router = express.Router();
 const patientController = require("../controllers/patientController");
 const staffController = require("../controllers/staffController");
-const authController = require("../controllers/authController");
+// const authController = require("../controllers/authController");
 const { verifyToken } = require("../middleware/auth");
 const { allowRoles } = require("../middleware/roles");
 const { requireActiveUser } = require("../middleware/activeUser");
 
 // Auth
 router.post("/register", patientController.register);
-router.post("/login", authController.login);
+// router.post("/login", authController.login);
 
 // Profile
 router.get("/getprofile", verifyToken, patientController.getProfile);
@@ -100,6 +100,7 @@ router.put(
 // Family
 router.post("/addfamily", verifyToken, patientController.addFamilyMember);
 router.get("/getfamily", verifyToken, patientController.getFamilyMembers);
+
 router.put(
   "/updatefamily/:id",
   verifyToken,
