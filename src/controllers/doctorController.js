@@ -1,5 +1,7 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
+const upload = require("../middleware/upload.middleware");
+
 
 exports.register = async (req, res) => {
   const {
@@ -1060,3 +1062,4 @@ exports.manualVisitBooking = async (req, res) => {
     connection.release();
   }
 };
+

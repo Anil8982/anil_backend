@@ -3,6 +3,8 @@ const bcrypt = require("bcryptjs");
 const eventBus = require("../events/eventBus");
 const { APPOINTMENT_REQUESTED } = require("../events/notification.events");
 
+const upload = require("../middleware/upload.middleware");
+
 // Add Family Members helpers
 const ALLOWED_RELATIONS = [
   "FATHER",
@@ -1324,3 +1326,4 @@ exports.getVisitSummary = async (req, res) => {
     res.status(500).json({ message: "Server error", error: err.message });
   }
 };
+

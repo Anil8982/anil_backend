@@ -43,6 +43,7 @@ app.use("/patient", require("./routes/patient.routes"));
 app.use("/doctor", require("./routes/doctor.routes"));
 app.use("/admin", require("./routes/admin.routes"));
 app.use("/notifications", require("./routes/notification.routes"));
+app.use("/uploads", express.static("uploads"));
 
 // Root endpoint
 app.get("/", (req, res) => {

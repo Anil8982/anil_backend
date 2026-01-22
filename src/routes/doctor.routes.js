@@ -5,6 +5,8 @@ const doctorController = require("../controllers/doctorController");
 const { verifyToken } = require("../middleware/auth");
 const { allowRoles } = require("../middleware/roles");
 const { requireActiveUser } = require("../middleware/activeUser");
+const upload = require("../middleware/upload.middleware");
+
 
 // Auth
 router.post("/register", doctorController.register);
@@ -15,7 +17,7 @@ router.get(
   "/dashboard",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.getDashboard
+  doctorController.getDashboard,
 );
 
 // Profile
@@ -23,14 +25,14 @@ router.get(
   "/profile",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.getDoctorProfile
+  doctorController.getDoctorProfile,
 );
 
 router.put(
   "/profile",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.updateDoctorProfile
+  doctorController.updateDoctorProfile,
 );
 
 // Availability
@@ -38,7 +40,7 @@ router.put(
   "/availability",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.updateAvailability
+  doctorController.updateAvailability,
 );
 
 // Appointments
@@ -46,35 +48,35 @@ router.get(
   "/appointments/incoming",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.getIncomingAppointments
+  doctorController.getIncomingAppointments,
 );
 
 router.put(
   "/respond-appointment/:id",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.respondAppointment
+  doctorController.respondAppointment,
 );
 
 router.get(
   "/appointments/today-queue",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.getTodayQueue
+  doctorController.getTodayQueue,
 );
 
 router.put(
   "/appointments/:id/start",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.startAppointment
+  doctorController.startAppointment,
 );
 
 router.put(
   "/appointments/:id/complete",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.completeAppointment
+  doctorController.completeAppointment,
 );
 
 router.post(
@@ -82,7 +84,7 @@ router.post(
   verifyToken,
   requireActiveUser,
   allowRoles("DOCTOR"),
-  doctorController.callNextToken
+  doctorController.callNextToken,
 );
 
 router.get(
@@ -90,7 +92,7 @@ router.get(
   verifyToken,
   requireActiveUser,
   allowRoles("DOCTOR"),
-  doctorController.getDoctorAppointmentHistory
+  doctorController.getDoctorAppointmentHistory,
 );
 
 // Notifications
@@ -98,7 +100,7 @@ router.get(
   "/notifications",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.getDoctorNotifications
+  doctorController.getDoctorNotifications,
 );
 
 // router.put(
@@ -112,37 +114,36 @@ router.put(
   "/notifications/:id/unread",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.getDoctorUnreadCount
+  doctorController.getDoctorUnreadCount,
 );
 
 router.get(
   "/reviews",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.getDoctorReviews
+  doctorController.getDoctorReviews,
 );
 
 router.post(
   "/appointments/:id/summary",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.addVisitSummary
+  doctorController.addVisitSummary,
 );
 
 router.get(
   "/my-qr",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.getMyQR
+  doctorController.getMyQR,
 );
 
 router.post(
   "/manualbooking",
   verifyToken,
   allowRoles("DOCTOR"),
-  doctorController.manualVisitBooking
+  doctorController.manualVisitBooking,
 );
-
 
 
 module.exports = router;

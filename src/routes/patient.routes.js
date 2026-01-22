@@ -1,11 +1,13 @@
 const express = require("express");
 const router = express.Router();
 const patientController = require("../controllers/patientController");
-const staffController = require("../controllers/staffController");
+// const staffController = require("../controllers/staffController");
 // const authController = require("../controllers/authController");
 const { verifyToken } = require("../middleware/auth");
 const { allowRoles } = require("../middleware/roles");
 const { requireActiveUser } = require("../middleware/activeUser");
+const upload = require("../middleware/upload.middleware");
+
 
 // Auth
 router.post("/register", patientController.register);
@@ -118,5 +120,7 @@ router.get(
   allowRoles("PATIENT"),
   patientController.getVisitSummary
 );
+
+
 
 module.exports = router;

@@ -2,6 +2,8 @@ const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
 const { sendEmail } = require("../utils/email.service");
 const resetPasswordTemplate = require("../utils/emailTemplates/resetPassword.template");
@@ -209,4 +211,128 @@ exports.resetPassword = async (req, res) => {
   }
 
   res.json({ message: "Password reset successfully" });
+};
+
+exports.uploadProfileImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "No image uploaded" });
+    }
+
+    const imagePath = req.file.path.replace(/\\/g, "/");
+
+    await db.query(`UPDATE users SET profile_image = ? WHERE id = ?`, [
+      imagePath,
+      req.user.id,
+    ]);
+
+    res.json({
+      message: "Profile image uploaded successfully",
+      profileImage: imagePath,
+    });
+  } catch (err) {
+    res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
+
+exports.getProfileImage = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const role = req.user.role; // doctor | patient
+
+    const table = role === "doctor" ? "doctors" : "patients";
+
+    const [[user]] = await db.query(
+      `SELECT profile_image FROM ${table} WHERE user_id = ?`,
+      [userId],
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    if (!user.profile_image) {
+      return res.status(200).json({
+        message: "Profile image not uploaded",
+        profileImage: null,
+      });
+    }
+
+    res.status(200).json({
+      message: "Profile image fetched successfully",
+      profileImage: user.profile_image,
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+exports.deleteProfileImage = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const role = req.user.role; // doctor | patient
+
+    const table = role === "doctor" ? "doctors" : "patients";
+
+    const [[user]] = await db.query(
+      `SELECT profile_image FROM ${table} WHERE user_id = ?`,
+      [userId],
+    );
+
+    if (!user || !user.profile_image) {
+      return res.status(400).json({ message: "No profile image to delete" });
+    }
+
+    const imagePath = path.join(__dirname, "..", "..", user.profile_image);
+
+    if (fs.existsSync(imagePath)) {
+      fs.unlinkSync(imagePath);
+    }
+
+    await db.query(
+      `UPDATE ${table} SET profile_image = NULL WHERE user_id = ?`,
+      [userId],
+    );
+
+    res.json({ message: "Profile image deleted successfully" });
+  } catch (err) {
+    res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
+
+exports.updateProfileImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "No image uploaded" });
+    }
+
+    const imagePath = req.file.path.replace(/\\/g, "/");
+    const userId = req.user.id;
+
+    await db.query("UPDATE users SET profile_image = ? WHERE id = ?", [
+      imagePath,
+      userId,
+    ]);
+
+    res.status(200).json({
+      message: "Profile image updated successfully",
+      profileImage: imagePath,
+    });
+  } catch (err) {
+    res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  }
 };
