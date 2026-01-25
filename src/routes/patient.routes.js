@@ -70,16 +70,6 @@ router.get(
 );
 
 
-
-// Staff manual booking
-// router.post(
-//   "/visit/manual-book",
-//   verifyToken,
-//   allowRoles("STAFF", "NURSE"),
-//   staffController.manualVisitBooking
-// );
-
-
 router.post(
   "/doctor-feedback",
   verifyToken,

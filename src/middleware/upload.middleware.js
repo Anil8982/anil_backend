@@ -4,31 +4,21 @@ const fs = require("fs");
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    try {
-      if (!req.user || !req.user.role) {
-        return cb(new Error("Unauthorized upload"), null);
-      }
-
-      const role = req.user.role.toLowerCase(); // doctor | patient
-      const uploadPath = path.join("uploads", "profiles", `${role}s`);
-
-      fs.mkdirSync(uploadPath, { recursive: true });
-      cb(null, uploadPath);
-    } catch (err) {
-      cb(err, null);
+    if (!req.user || !req.user.role) {
+      return cb(new Error("Unauthorized upload"), null);
     }
+    const role = req.user.role.toLowerCase(); // patient | doctor
+    const uploadPath = path.join("uploads", "profiles", `${role}s`);
+    fs.mkdirSync(uploadPath, { recursive: true });
+    cb(null, uploadPath);
   },
-
   filename: (req, file, cb) => {
-    const safeExt = path.extname(file.originalname).toLowerCase();
-    const allowedExts = [".jpg", ".jpeg", ".png", ".webp"];
-
-    if (!allowedExts.includes(safeExt)) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowed = [".jpg", ".jpeg", ".png", ".webp"];
+    if (!allowed.includes(ext)) {
       return cb(new Error("Invalid image format"), null);
     }
-
-    const uniqueName = `user_${req.user.id}_${Date.now()}${safeExt}`;
-    cb(null, uniqueName);
+    cb(null, `user_${req.user.id}_${Date.now()}${ext}`);
   },
 });
 
@@ -39,12 +29,9 @@ const fileFilter = (req, file, cb) => {
   cb(null, true);
 };
 
-const upload = multer({
+module.exports = multer({
   storage,
   fileFilter,
-  limits: {
-    fileSize: 2 * 1024 * 1024, // 2MB
-  },
+  // limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
-
-module.exports = upload;
