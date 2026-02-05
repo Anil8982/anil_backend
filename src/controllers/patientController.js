@@ -6,6 +6,7 @@ const { APPOINTMENT_REQUESTED } = require("../events/notification.events");
 const upload = require("../middleware/upload.middleware");
 
 // Add Family Members helpers
+
 const ALLOWED_RELATIONS = [
   "FATHER",
   "MOTHER",
@@ -16,13 +17,14 @@ const ALLOWED_RELATIONS = [
   "SISTER",
   "OTHER",
 ];
+
 // Add Family Members helpers
 const isFutureDate = (date) => {
   return new Date(date) > new Date();
 };
 
 // Patient Registration
-// --------------------
+
 exports.register = async (req, res) => {
   const { fullName, phone, email, password, confirmPassword, gender, dob } =
     req.body;
@@ -80,7 +82,7 @@ exports.register = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // ✅ INSERT INTO USERS (NO loginId)
+    // ✅ INSERT INTO USERS
     const [userResult] = await connection.query(
       `INSERT INTO users (email, mobile, password, role)
        VALUES (?, ?, ?, 'PATIENT')`,
@@ -107,9 +109,8 @@ exports.register = async (req, res) => {
   }
 };
 
-// --------------------
-// Get Patient Profile (FIXED)
-// --------------------
+// Get Patient Profile
+
 exports.getProfile = async (req, res) => {
   const userId = req.user.id;
 
@@ -142,9 +143,8 @@ exports.getProfile = async (req, res) => {
   }
 };
 
-// --------------------
 // Update Patient Profile
-// --------------------
+
 exports.updateProfile = async (req, res) => {
   const userId = req.user.id;
   const { fullName, phone, gender, dob } = req.body;
@@ -280,9 +280,13 @@ exports.getDashboard = async (req, res) => {
   const patientId = req.user.id;
 
   try {
-    // -------------------------------
+    // ✅ 0️⃣ Patient name (ADD THIS)
+    const [[patient]] = await db.query(
+      `SELECT fullName FROM patients WHERE user_id = ?`,
+      [patientId],
+    );
+
     // 1️⃣ Upcoming appointments count
-    // -------------------------------
     const [[upcoming]] = await db.query(
       `SELECT COUNT(*) AS count
        FROM appointments
@@ -292,9 +296,7 @@ exports.getDashboard = async (req, res) => {
       [patientId],
     );
 
-    // -------------------------------
-    // 2️⃣ Today's active token (with slot)
-    // -------------------------------
+    // 2️⃣ Today's active token
     const [[todayToken]] = await db.query(
       `SELECT 
          appointment_type,
@@ -310,12 +312,11 @@ exports.getDashboard = async (req, res) => {
       [patientId],
     );
 
-    // -------------------------------
     // 3️⃣ Upcoming appointments list
-    // -------------------------------
     const [appointments] = await db.query(
       `SELECT
         a.id,
+        a.doctor_id AS doctorId,
         d.doctorName,
         d.specialization,
         a.appointment_type,
@@ -332,7 +333,10 @@ exports.getDashboard = async (req, res) => {
       [patientId],
     );
 
+    // ✅ FINAL RESPONSE (YEH WAHI JAGAH HAI)
     return res.status(200).json({
+      patientName: patient?.fullName || "Patient",
+
       upcomingCount: upcoming.count,
       todayToken: todayToken
         ? {
@@ -351,7 +355,7 @@ exports.getDashboard = async (req, res) => {
   }
 };
 
-// PATIENT CLINIC / HOSPITAL BOOKING
+// Patient getVisitDoctorById
 
 // PATIENT searchVisitDoctors
 
@@ -456,7 +460,6 @@ exports.getDiseases = async (req, res) => {
   }
 };
 
-//
 // returns both clinic & hospital names controller
 
 exports.getPlaceNames = async (req, res) => {
@@ -523,7 +526,7 @@ exports.bookVisitAppointment = async (req, res) => {
     shift = "EVENING";
   } else {
     return res.status(400).json({
-      message: "Booking closed (night hours)",
+      message: "Booking closed",
     });
   }
 
@@ -624,18 +627,22 @@ exports.getClinicAppointments = async (req, res) => {
 
   try {
     const [appointments] = await db.query(
-      `SELECT 
-        a.id,
-        d.doctorName,
-        d.specialization,
-        a.appointment_date,
-        a.token_number,
-        a.status
-       FROM appointments a
-       JOIN doctors d ON a.doctor_id = d.user_id
-       WHERE a.patient_id = ?
-       AND a.appointment_type = 'CLINIC'
-       ORDER BY a.appointment_date DESC, a.token_number`,
+    `SELECT
+    a.id,
+    a.doctor_id AS doctorId,
+    d.doctorName,
+    d.specialization,
+    a.appointment_type,
+    a.appointment_date,
+    a.appointment_slot,
+    a.token_number,
+    a.status
+   FROM appointments a
+   JOIN doctors d ON a.doctor_id = d.user_id
+   WHERE a.patient_id = ?
+   AND a.appointment_date >= CURDATE()
+   AND a.status IN ('PENDING','ACCEPTED')
+   ORDER BY a.appointment_date ASC, a.appointment_slot, a.token_number`,
       [patientId],
     );
 
@@ -1194,8 +1201,6 @@ exports.deleteFamilyMember = async (req, res) => {
 
 // End Family Members
 
-// Patient Notification
-
 exports.getPatientNotifications = async (req, res) => {
   const patientId = req.user.id;
 
@@ -1326,4 +1331,3 @@ exports.getVisitSummary = async (req, res) => {
     res.status(500).json({ message: "Server error", error: err.message });
   }
 };
-

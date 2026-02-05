@@ -8,12 +8,8 @@ const {
   APPOINTMENT_CANCELLED_BY_ADMIN,
 } = require("../events/notification.events");
 
-
-
 // GET /admin/dashboard
-// GET  /admin/doctors?status=PENDING
-// PUT  /admin/doctors/:id/approve
-// PUT  /admin/doctors/:id/reject
+
 
 exports.getDashboard = async (req, res) => {
   const [[doctors]] = await db.query(
@@ -70,53 +66,6 @@ exports.getDoctors = async (req, res) => {
   res.json({ doctors });
 };
 
-// exports.approveDoctor = async (req, res) => {
-//   const userId = req.params.id;
-
-//   const [[doctor]] = await db.query(
-//     `SELECT d.doctorName, u.email, u.mobile
-//      FROM doctors d
-//      JOIN users u ON u.id = d.user_id
-//      WHERE d.user_id = ?`,
-//     [userId]
-//   );
-
-//   if (!doctor) {
-//     return res.status(404).json({ message: "Doctor not found" });
-//   }
-
-//   await db.query(`UPDATE doctors SET status='APPROVED' WHERE user_id=?`, [
-//     userId,
-//   ]);
-
-//   const smsMsg =
-//     "🎉 YoDoctor: Your profile is APPROVED. You can now login and start consulting.";
-//   const emailMsg = `
-//     <h2>Congratulations Dr. ${doctor.doctorName}</h2>
-//     <p>Your profile has been <b>APPROVED</b>.</p>
-//     <p>You can now login and start accepting patients.</p>
-//   `;
-
-//   await sendSMS(doctor.mobile, smsMsg);
-//   await logNotification({
-//     userId,
-//     role: "DOCTOR",
-//     type: "APPROVED",
-//     channel: "SMS",
-//     message: smsMsg,
-//   });
-
-//   await sendEmail(doctor.email, "Doctor Approved", emailMsg);
-//   await logNotification({
-//     userId,
-//     role: "DOCTOR",
-//     type: "APPROVED",
-//     channel: "EMAIL",
-//     message: emailMsg,
-//   });
-
-//   res.json({ message: "Doctor approved & notified" });
-// };
 
 exports.approveDoctor = async (req, res) => {
   const userId = req.params.id;
@@ -200,42 +149,10 @@ exports.rejectDoctor = async (req, res) => {
   }
 };
 
-// GET /admin/patients
-// PUT /admin/users/:id/block
-// PUT /admin/users/:id/unblock
-
-// exports.rejectDoctor = async (req, res) => {
-//   const userId = req.params.id;
-
-//   const [[doctor]] = await db.query(
-//     `SELECT d.doctorName, u.email, u.mobile
-//      FROM doctors d
-//      JOIN users u ON u.id = d.user_id
-//      WHERE d.user_id = ?`,
-//     [userId]
-//   );
-
-//   await db.query(`UPDATE doctors SET status='REJECTED' WHERE user_id=?`, [
-//     userId,
-//   ]);
-
-//   const smsMsg =
-//     "❌ YoDoctor: Sorry, your profile was REJECTED. Please contact support.";
-//   const emailMsg = `
-//     <h2>Sorry Dr. ${doctor.doctorName}</h2>
-//     <p>Your profile has been <b>REJECTED</b>.</p>
-//     <p>Please contact support for details.</p>
-//   `;
-
-//   await sendSMS(doctor.mobile, smsMsg);
-//   await sendEmail(doctor.email, "Doctor Rejected", emailMsg);
-
-//   res.json({ message: "Doctor rejected & notified" });
-// };
 
 exports.getPatients = async (req, res) => {
   const [patients] = await db.query(
-    `SELECT id, loginId, is_active FROM users WHERE role='PATIENT'`,
+    `SELECT id, email, is_active FROM users WHERE role='PATIENT'`,
   );
   res.json({ patients });
 };
@@ -252,7 +169,6 @@ exports.unblockUser = async (req, res) => {
   res.json({ message: "User unblocked" });
 };
 
-// ADMIN → ALL APPOINTMENTS VIEW
 // GET /admin/appointments
 
 exports.getAllAppointments = async (req, res) => {
@@ -306,7 +222,7 @@ exports.getAllAppointments = async (req, res) => {
 };
 
 // FORCE CANCEL APPOINTMENT (ADMIN POWER)
-// PUT /admin/appointments/:id/cancel
+
 
 exports.forceCancelAppointment = async (req, res) => {
   const appointmentId = req.params.id;
@@ -332,7 +248,6 @@ exports.forceCancelAppointment = async (req, res) => {
   res.json({ message: "Appointment cancelled by admin" });
 };
 
-// GET /admin/analytics
 // ADMIN ANALYTICS (GLOBAL)
 
 exports.getAdminAnalytics = async (req, res) => {

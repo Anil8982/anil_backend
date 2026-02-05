@@ -2,6 +2,13 @@ const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const upload = require("../middleware/upload.middleware");
 
+const eventBus = require("../events/eventBus");
+const {
+  APPOINTMENT_CONFIRMED,
+  APPOINTMENT_REJECTED,
+  APPOINTMENT_REMINDER,
+} = require("../events/notification.events");
+
 exports.register = async (req, res) => {
   const {
     placeType,
@@ -128,7 +135,7 @@ exports.register = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // --------------------
-    // Insert into users (NO loginId)
+    // Insert into users ()
     // --------------------
     const [userResult] = await connection.query(
       `INSERT INTO users (email, mobile, password, role)
@@ -191,16 +198,13 @@ exports.respondAppointment = async (req, res) => {
   const { id: appointmentId } = req.params;
   const { action } = req.body;
 
-  // ✅ Validate action
   if (!["ACCEPT", "REJECT"].includes(action)) {
     return res.status(400).json({ message: "Invalid action" });
   }
 
-  // ⚠️ Use consistent DB status
   const newStatus = action === "ACCEPT" ? "ACCEPTED" : "REJECTED";
 
   try {
-    // ✅ Fetch appointment (ONLY required data)
     const [[appointment]] = await db.query(
       `SELECT patient_id
        FROM appointments
@@ -216,7 +220,6 @@ exports.respondAppointment = async (req, res) => {
       });
     }
 
-    // ✅ Update appointment status
     await db.query(
       `UPDATE appointments
        SET status = ?
@@ -224,81 +227,36 @@ exports.respondAppointment = async (req, res) => {
       [newStatus, appointmentId],
     );
 
-    // 🔥 STEP 4.A — EVENT EMIT
-    if (action === "ACCEPT") {
-      eventBus.emit(APPOINTMENT_CONFIRMED, {
-        eventType: APPOINTMENT_CONFIRMED,
-        appointmentId,
-        patient: {
-          id: appointment.patient_id,
-        },
-        doctor: {
-          id: doctorId,
-        },
-      });
-    } else {
-      eventBus.emit(APPOINTMENT_REJECTED, {
-        eventType: APPOINTMENT_REJECTED,
-        appointmentId,
-        patient: {
-          id: appointment.patient_id,
-        },
-        doctor: {
-          id: doctorId,
-        },
-      });
+    // 🔒 SAFE EVENT EMIT (NO CRASH)
+    if (eventBus?.emit) {
+      if (action === "ACCEPT") {
+        eventBus.emit(APPOINTMENT_CONFIRMED, {
+          eventType: APPOINTMENT_CONFIRMED,
+          appointmentId,
+          patient: { id: appointment.patient_id },
+          doctor: { id: doctorId },
+        });
+      } else {
+        eventBus.emit(APPOINTMENT_REJECTED, {
+          eventType: APPOINTMENT_REJECTED,
+          appointmentId,
+          patient: { id: appointment.patient_id },
+          doctor: { id: doctorId },
+        });
+      }
     }
 
     return res.json({
       message: `Appointment ${newStatus.toLowerCase()}`,
     });
   } catch (err) {
+    console.error("respondAppointment error:", err);
     return res.status(500).json({
       message: "Server error",
       error: err.message,
     });
   }
 };
-
-// exports.getDashboard = async (req, res) => {
-//   const doctorId = req.user.id;
-
-//   try {
-//     const [[pending]] = await db.query(
-//       `SELECT COUNT(*) AS count
-//        FROM appointments
-//        WHERE doctor_id = ?
-//        AND status = 'PENDING'`,
-//       [doctorId]
-//     );
-
-//     const [[todayTotal]] = await db.query(
-//       `SELECT COUNT(*) AS count
-//        FROM appointments
-//        WHERE doctor_id = ?
-//        AND appointment_date = CURDATE()
-//        AND appointment_type IN ('CLINIC','HOSPITAL')`,
-//       [doctorId]
-//     );
-
-//     const [[todayCompleted]] = await db.query(
-//       `SELECT COUNT(*) AS count
-//        FROM appointments
-//        WHERE doctor_id = ?
-//        AND appointment_date = CURDATE()
-//        AND status = 'COMPLETED'`,
-//       [doctorId]
-//     );
-
-//     res.json({
-//       pendingRequests: pending.count,
-//       todayQueue: todayTotal.count,
-//       completedToday: todayCompleted.count,
-//     });
-//   } catch (err) {
-//     res.status(500).json({ message: "Server error" });
-//   }
-// };
 
 exports.getDashboard = async (req, res) => {
   const doctorId = req.user.id;
@@ -452,7 +410,7 @@ exports.completeAppointment = async (req, res) => {
 
     // EMAIL summary notification
     await sendEmail({
-      to: appt.loginId,
+      to: appt.email,
       subject: "Visit Completed",
       text: "Your visit is completed. You can view the summary in the app.",
     });
@@ -707,7 +665,6 @@ exports.updateAvailability = async (req, res) => {
   }
 };
 
-// exports.submitDoctorReview = async (req, res) => {
 //   const patientId = req.user.id;
 //   const { appointmentId, rating, review } = req.body;
 
@@ -780,13 +737,15 @@ exports.getDoctorReviews = async (req, res) => {
   }
 };
 
-exports.addVisitSummary = async (req, res) => {
+// addVisitSummary
+
+exports.addVisitSummary = async (req, res) => { 
   const doctorId = req.user.id;
   const { id: appointmentId } = req.params;
   const { notes, prescription, followUpAfterDays } = req.body;
 
   try {
-    // 1️⃣ Validate appointment
+    /* ================= 1️⃣ VALIDATE APPOINTMENT ================= */
     const [[appt]] = await db.query(
       `SELECT patient_id
        FROM appointments
@@ -798,52 +757,123 @@ exports.addVisitSummary = async (req, res) => {
 
     if (!appt) {
       return res.status(400).json({
-        message: "Visit summary can be added only after completion",
+        message: "Visit summary can be added only after appointment completion",
       });
     }
 
-    // 2️⃣ Calculate follow-up date
+    let patientId = appt.patient_id;
+
+    /* ================= FALLBACK FOR WALK-IN / MANUAL ================= */
+    if (!patientId) {
+      const [[walkin]] = await db.query(
+        `SELECT id FROM walkin_patients WHERE appointment_id = ?`,
+        [appointmentId],
+      );
+
+      if (walkin) {
+        patientId = walkin.id;
+      }
+    }
+
+    if (!patientId) {
+      return res.status(400).json({
+        message:
+          "Cannot attach visit summary because patient record is missing",
+      });
+    }
+
+    /* ================= 2️⃣ FOLLOW-UP DATE ================= */
     let followUpDate = null;
     if (followUpAfterDays) {
       followUpDate = new Date();
-      followUpDate.setDate(followUpDate.getDate() + followUpAfterDays);
+      followUpDate.setDate(followUpDate.getDate() + Number(followUpAfterDays));
     }
 
-    // 3️⃣ Save visit summary
-    await db.query(
-      `INSERT INTO visit_summaries
-       (appointment_id, notes, prescription, follow_up_date)
-       VALUES (?, ?, ?, ?)`,
-      [appointmentId, notes || null, prescription || null, followUpDate],
+    /* ================= 3️⃣ CHECK EXISTING SUMMARY ================= */
+    const [[existingSummary]] = await db.query(
+      `SELECT id FROM visit_summaries WHERE appointment_id = ?`,
+      [appointmentId],
     );
 
-    // 4️⃣ Follow-up reminder
-    if (followUpDate) {
+    if (existingSummary) {
+      /* ===== UPDATE ===== */
       await db.query(
-        `INSERT INTO reminders
-         (appointment_id, reminder_type, scheduled_at)
-         VALUES (?, 'FOLLOW_UP', ?)`,
-        [appointmentId, followUpDate],
+        `UPDATE visit_summaries
+         SET notes = ?, prescription = ?, follow_up_date = ?
+         WHERE appointment_id = ?`,
+        [notes || null, prescription || null, followUpDate, appointmentId],
+      );
+    } else {
+      /* ===== INSERT ===== */
+      await db.query(
+        `INSERT INTO visit_summaries
+         (appointment_id, notes, prescription, follow_up_date)
+         VALUES (?, ?, ?, ?)`,
+        [appointmentId, notes || null, prescription || null, followUpDate],
       );
     }
 
-    // 🔥 EVENT EMIT
-    eventBus.emit(VISIT_SUMMARY_ADDED, {
-      eventType: VISIT_SUMMARY_ADDED,
-      appointmentId,
-      patient: { id: appt.patient_id },
-      doctor: { id: doctorId },
-    });
+    /* ================= 4️⃣ HEALTH TIMELINE (ONCE ONLY) ================= */
+    const [[timelineExists]] = await db.query(
+      `SELECT id FROM health_timeline
+       WHERE type = 'VISIT_SUMMARY'
+       AND reference_id = ?`,
+      [appointmentId],
+    );
 
+    if (!timelineExists) {
+      await db.query(
+        `INSERT INTO health_timeline
+         (patient_id, type, reference_id, title, description)
+         VALUES (?, 'VISIT_SUMMARY', ?, 'Doctor Visit Summary',
+                 'Visit summary added by doctor')`,
+        [appt.patient_id, appointmentId],
+      );
+    }
+
+    /* ================= SUCCESS ================= */
     return res.json({
-      message: "Visit summary saved successfully",
+      message: existingSummary
+        ? "Visit summary updated successfully"
+        : "Visit summary added successfully",
       followUpDate,
+      isEdit: !!existingSummary,
     });
   } catch (err) {
+    console.error("Add Visit Summary Error:", err);
     return res.status(500).json({
       message: "Server error",
       error: err.message,
     });
+  }
+};
+
+// getDoctorById
+
+exports.getDoctorById = async (req, res) => {
+  const { id } = req.params;
+  console.log("HIT getDoctorById", req.params.id);
+  try {
+    const [[doctor]] = await db.query(
+      `SELECT 
+        d.user_id AS doctorId,
+        d.doctorName,
+        d.specialization,
+        d.place_type,
+        d.city
+       FROM doctors d
+       WHERE d.user_id = ? 
+       AND d.status = 'APPROVED'`,
+      [id],
+    );
+
+    if (!doctor) {
+      return res.status(404).json({ message: "Doctor not found" });
+    }
+
+    res.status(200).json({ doctor });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -921,6 +951,10 @@ exports.getDoctorNotifications = async (req, res) => {
 // DOCTOR – getMyQR
 
 exports.getMyQR = async (req, res) => {
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+
+  console.log("FRONTEND_URL =", frontendUrl);
+
   const doctorId = req.user.id;
 
   const [[doctor]] = await db.query(
@@ -934,12 +968,9 @@ exports.getMyQR = async (req, res) => {
     });
   }
 
-  const qrUrl = `${process.env.FRONTEND_URL}/qr-book?doctorId=${doctorId}`;
+  const qrUrl = `${frontendUrl}/client/book-appointment?doctorId=${doctorId}`;
 
-  res.json({
-    doctorId,
-    qrUrl,
-  });
+  res.json({ doctorId, qrUrl });
 };
 
 // STAFF / NURSE – Manual (Walk-in) Visit Booking

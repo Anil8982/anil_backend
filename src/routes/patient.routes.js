@@ -45,6 +45,9 @@ router.get(
   verifyToken,
   patientController.getClinicAppointments
 );
+
+
+
 router.put(
   "/visit/appointments/:id/cancel",
   verifyToken,

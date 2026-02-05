@@ -1,3 +1,5 @@
+console.log("✅ doctorRoutes loaded");
+
 const express = require("express");
 const router = express.Router();
 const doctorController = require("../controllers/doctorController");
@@ -7,6 +9,7 @@ const { allowRoles } = require("../middleware/roles");
 const { requireActiveUser } = require("../middleware/activeUser");
 const upload = require("../middleware/upload.middleware");
 
+console.log("✅ doctorRoutes loaded");
 
 // Auth
 router.post("/register", doctorController.register);
@@ -124,6 +127,13 @@ router.get(
   doctorController.getDoctorReviews,
 );
 
+router.get(
+  "/getDoctorById/:id",
+  verifyToken,
+  allowRoles("PATIENT"),
+  doctorController.getDoctorById,
+);
+
 router.post(
   "/appointments/:id/summary",
   verifyToken,
@@ -144,6 +154,5 @@ router.post(
   allowRoles("DOCTOR"),
   doctorController.manualVisitBooking,
 );
-
 
 module.exports = router;
